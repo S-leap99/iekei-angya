@@ -7,7 +7,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { defaultShops } from './lib/shopSeeds';
 import { noPhotoDataUrl } from './lib/placeholders';
 import { deleteShopImage, executeCsvImport, getConnectionLabel, getImageBucketName, listShops, previewCsvImport, removeShop, upsertShop, uploadShopImage } from './lib/shopService';
-import { getAdminAuthState, signInAdmin, signOutAdmin } from './lib/authService';
+import { getadmin-8fj3k2-3me77nfcb6c0AuthState, signInadmin-8fj3k2-3me77nfcb6c0, signOutadmin-8fj3k2-3me77nfcb6c0 } from './lib/authService';
 import type { CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag } from './lib/types';
 
 const originOptions = ['吉村家系', '本牧家系', '杉田家系'];
@@ -92,16 +92,16 @@ export default function App() {
         <Route path="/map" element={<MapPage shops={shopState.shops} />} />
         <Route path="/shops/:shopId" element={<ShopDetailPage shops={shopState.shops} />} />
         <Route path="/areas" element={<Navigate to="/shops" replace />} />
-        <Route path="/admin/login" element={<AdminLoginPage />} />
-        <Route path="/admin" element={<AdminRoute><AdminTopPage shops={shopState.shops} /></AdminRoute>} />
-        <Route path="/admin/shops" element={<AdminRoute><AdminShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></AdminRoute>} />
-        <Route path="/admin/shops/:shopId" element={<AdminRoute><AdminEditPage shops={shopState.shops} onSaved={shopState.refresh} /></AdminRoute>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/login" element={<admin-8fj3k2-3me77nfcb6c0LoginPage />} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0" element={<admin-8fj3k2-3me77nfcb6c0Route><admin-8fj3k2-3me77nfcb6c0TopPage shops={shopState.shops} /></admin-8fj3k2-3me77nfcb6c0Route>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/shops" element={<admin-8fj3k2-3me77nfcb6c0Route><admin-8fj3k2-3me77nfcb6c0ShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></admin-8fj3k2-3me77nfcb6c0Route>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/shops/:shopId" element={<admin-8fj3k2-3me77nfcb6c0Route><admin-8fj3k2-3me77nfcb6c0EditPage shops={shopState.shops} onSaved={shopState.refresh} /></admin-8fj3k2-3me77nfcb6c0Route>} />
       </Routes>
     </div>
   );
 }
 
-function AdminRoute({ children }: { children: ReactNode }) {
+function admin-8fj3k2-3me77nfcb6c0Route({ children }: { children: ReactNode }) {
   const location = useLocation();
   const [loading, setLoading] = useState(true);
   const [allowed, setAllowed] = useState(false);
@@ -110,9 +110,9 @@ function AdminRoute({ children }: { children: ReactNode }) {
     let active = true;
     const run = async () => {
       try {
-        const state = await getAdminAuthState();
+        const state = await getadmin-8fj3k2-3me77nfcb6c0AuthState();
         if (!active) return;
-        setAllowed(state.loggedIn && state.isAdmin);
+        setAllowed(state.loggedIn && state.isadmin-8fj3k2-3me77nfcb6c0);
       } catch {
         if (!active) return;
         setAllowed(false);
@@ -131,7 +131,7 @@ function AdminRoute({ children }: { children: ReactNode }) {
   }
 
   if (!allowed) {
-    return <Navigate to="/admin/login" replace state={{ from: `${location.pathname}${location.search}` }} />;
+    return <Navigate to="/admin-8fj3k2-3me77nfcb6c0/login" replace state={{ from: `${location.pathname}${location.search}` }} />;
   }
   return children;
 }
@@ -430,10 +430,10 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
   );
 }
 
-function AdminLoginPage() {
+function admin-8fj3k2-3me77nfcb6c0LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from ?? '/admin';
+  const from = (location.state as { from?: string } | null)?.from ?? '/admin-8fj3k2-3me77nfcb6c0';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -444,7 +444,7 @@ function AdminLoginPage() {
     try {
       setBusy(true);
       setError('');
-      await signInAdmin(email, password);
+      await signInadmin-8fj3k2-3me77nfcb6c0(email, password);
       navigate(from, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ログインに失敗しました。');
@@ -454,12 +454,12 @@ function AdminLoginPage() {
   };
 
   return (
-    <main className="page admin-login-page">
+    <main className="page admin-8fj3k2-3me77nfcb6c0-login-page">
       <Header title="管理画面ログイン" eyebrow="管理用URL" />
       <section className="hero-card login-card">
         <p className="hero-copy">管理画面を見るにはログインが必要です。Supabaseの管理者アカウントでログインすると、管理画面だけが開けます。</p>
         <form className="form-stack" onSubmit={handleLogin}>
-          <label>メールアドレス<input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="例: admin@example.com" /></label>
+          <label>メールアドレス<input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="例: admin-8fj3k2-3me77nfcb6c0@example.com" /></label>
           <label>パスワード<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="管理者用パスワード" /></label>
           {error ? <p className="error-text">{error}</p> : null}
           <button type="submit" className="primary-button block" disabled={busy}>{busy ? 'ログイン中...' : 'ログイン'}</button>
@@ -474,16 +474,16 @@ function AdminLoginPage() {
   );
 }
 
-function AdminTopPage({ shops }: { shops: Shop[] }) {
+function admin-8fj3k2-3me77nfcb6c0TopPage({ shops }: { shops: Shop[] }) {
   const navigate = useNavigate();
-  const [adminEmail, setAdminEmail] = useState('');
+  const [admin-8fj3k2-3me77nfcb6c0Email, setadmin-8fj3k2-3me77nfcb6c0Email] = useState('');
 
   useEffect(() => {
     let active = true;
-    void getAdminAuthState().then((state) => {
-      if (active) setAdminEmail(state.email);
+    void getadmin-8fj3k2-3me77nfcb6c0AuthState().then((state) => {
+      if (active) setadmin-8fj3k2-3me77nfcb6c0Email(state.email);
     }).catch(() => {
-      if (active) setAdminEmail('');
+      if (active) setadmin-8fj3k2-3me77nfcb6c0Email('');
     });
     return () => {
       active = false;
@@ -491,8 +491,8 @@ function AdminTopPage({ shops }: { shops: Shop[] }) {
   }, []);
 
   const logout = async () => {
-    await signOutAdmin();
-    navigate('/admin/login', { replace: true });
+    await signOutadmin-8fj3k2-3me77nfcb6c0();
+    navigate('/admin-8fj3k2-3me77nfcb6c0/login', { replace: true });
   };
 
   return (
@@ -502,16 +502,16 @@ function AdminTopPage({ shops }: { shops: Shop[] }) {
         <strong>{getConnectionLabel()}</strong>
         <span>Supabaseの接続情報が入ると、店舗データはクラウドに保存されます。</span>
         <span>画像アップロードを使う場合は、Storage に <code>{getImageBucketName()}</code> バケットを用意してから使ってください。</span>
-        {adminEmail ? <span>ログイン中: {adminEmail}</span> : null}
+        {admin-8fj3k2-3me77nfcb6c0Email ? <span>ログイン中: {admin-8fj3k2-3me77nfcb6c0Email}</span> : null}
       </section>
       <section className="stats-grid section compact">
         <article className="info-card"><strong>{shops.length}</strong><span>登録店舗数</span></article>
         <article className="info-card"><strong>{shops.filter((shop) => shop.updatedAt >= '2026-03-23').length}</strong><span>今週の更新</span></article>
         <article className="info-card"><strong>{shops.filter((shop) => !shop.officialUrl).length}</strong><span>要確認URL</span></article>
       </section>
-      <section className="section compact admin-links">
-        <Link className="primary-button block" to="/admin/shops">店舗一覧へ</Link>
-        <Link className="secondary-button block admin-secondary" to="/admin/shops/new">店舗登録へ</Link>
+      <section className="section compact admin-8fj3k2-3me77nfcb6c0-links">
+        <Link className="primary-button block" to="/admin-8fj3k2-3me77nfcb6c0/shops">店舗一覧へ</Link>
+        <Link className="secondary-button block admin-8fj3k2-3me77nfcb6c0-secondary" to="/admin-8fj3k2-3me77nfcb6c0/shops/new">店舗登録へ</Link>
       </section>
       <section className="section compact">
         <button className="ghost-button block" onClick={logout}>ログアウト</button>
@@ -520,7 +520,7 @@ function AdminTopPage({ shops }: { shops: Shop[] }) {
   );
 }
 
-function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[]; loading: boolean; onDeleted: () => Promise<void>; onRefresh: () => Promise<void> }) {
+function admin-8fj3k2-3me77nfcb6c0ShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[]; loading: boolean; onDeleted: () => Promise<void>; onRefresh: () => Promise<void> }) {
   const [busyId, setBusyId] = useState('');
   const [message, setMessage] = useState('');
   const [searchText, setSearchText] = useState('');
@@ -592,7 +592,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
 
   return (
     <main className="page">
-      <Header title="管理画面: 店舗一覧" backTo="/admin" />
+      <Header title="管理画面: 店舗一覧" backTo="/admin-8fj3k2-3me77nfcb6c0" />
       {message ? <p className="page-message">{message}</p> : null}
       <section className="section compact info-card form-stack">
         <label>店舗名で検索<input value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="店舗名を部分一致で検索" /></label>
@@ -625,21 +625,21 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
             </div>
             <div className="action-row">
               <button type="button" className="primary-button block" onClick={handleCsvImport} disabled={csvBusy || csvPreview.readyCount === 0}>{csvBusy ? '取込中...' : 'この内容で取り込む'}</button>
-              <button type="button" className="secondary-button block admin-secondary" onClick={() => { setCsvPreview(null); setCsvStatus('CSVをまだ読み込んでいません'); setCsvFileName(''); }} disabled={csvBusy}>プレビューを閉じる</button>
+              <button type="button" className="secondary-button block admin-8fj3k2-3me77nfcb6c0-secondary" onClick={() => { setCsvPreview(null); setCsvStatus('CSVをまだ読み込んでいません'); setCsvFileName(''); }} disabled={csvBusy}>プレビューを閉じる</button>
             </div>
           </div>
         ) : null}
       </section>
       <section className="section compact">
         {loading ? <p>読み込み中です...</p> : filteredShops.map((shop) => (
-          <article key={shop.id} className="admin-row">
+          <article key={shop.id} className="admin-8fj3k2-3me77nfcb6c0-row">
             <div>
               <strong>{shop.name}</strong>
               <p>{shop.origin} / {shop.updatedAt}</p>
             </div>
             <div className="row-actions">
-              <Link className="secondary-button small admin-secondary" to={`/shops/${shop.id}`}>公開画面</Link>
-              <Link className="primary-button small" to={`/admin/shops/${shop.id}`}>編集</Link>
+              <Link className="secondary-button small admin-8fj3k2-3me77nfcb6c0-secondary" to={`/shops/${shop.id}`}>公開画面</Link>
+              <Link className="primary-button small" to={`/admin-8fj3k2-3me77nfcb6c0/shops/${shop.id}`}>編集</Link>
               <button className="ghost-button small-danger" onClick={() => void handleDelete(shop.id)} disabled={busyId === shop.id}>{busyId === shop.id ? '削除中...' : '削除'}</button>
             </div>
           </article>
@@ -650,7 +650,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
   );
 }
 
-function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promise<void> }) {
+function admin-8fj3k2-3me77nfcb6c0EditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promise<void> }) {
   const { shopId } = useParams();
   const navigate = useNavigate();
   const isNew = shopId === 'new';
@@ -689,7 +689,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
       await onSaved();
       const uploadSummary = pendingUploads.length ? ` 画像${pendingUploads.length}枚も反映しました。` : '';
       window.alert(`変更完了。${uploadSummary}`.trim());
-      navigate('/admin/shops', { replace: true });
+      navigate('/admin-8fj3k2-3me77nfcb6c0/shops', { replace: true });
     } catch (err) {
       const rawMessage = err instanceof Error ? err.message : '';
       const nextMessage = rawMessage.trim() || '保存に失敗しました。Storage設定と画像権限を確認してください。';
@@ -727,7 +727,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
 
   return (
     <main className="page">
-      <Header title="管理画面: 店舗登録・編集" backTo="/admin/shops" />
+      <Header title="管理画面: 店舗登録・編集" backTo="/admin-8fj3k2-3me77nfcb6c0/shops" />
       {message ? <p className="page-message">{message}</p> : null}
       <form className="section compact form-stack" onSubmit={handleSubmit}>
         <label>店舗名<input value={form.name} onChange={(e) => handleChange('name', e.target.value)} /></label>
@@ -746,15 +746,15 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
         <label>緯度<input value={String(form.lat)} onChange={(e) => handleChange('lat', Number(e.target.value))} /></label>
         <label>経度<input value={String(form.lng)} onChange={(e) => handleChange('lng', Number(e.target.value))} /></label>
         <label>管理メモ<textarea value={form.memo} onChange={(e) => handleChange('memo', e.target.value)} rows={4} /></label>
-        <section className="image-admin-panel">
+        <section className="image-admin-8fj3k2-3me77nfcb6c0-panel">
           <div className="section-head"><h2>店舗写真</h2><span>最大3枚（1 / 2 / 3）</span></div>
           <p className="csv-help">写真は保存ボタンを押したタイミングでアップロードされます。アップロード前に自動でサイズを小さくしてから送信します。1 が店舗詳細の先頭写真・店舗カード画像になります。</p>
           {imageMessage ? <p className="page-message">{imageMessage}</p> : null}
-          <div className="admin-image-grid">
+          <div className="admin-8fj3k2-3me77nfcb6c0-image-grid">
             {imageTypeOrder.map((imageType) => {
               const currentImage = shop?.images.find((item) => item.imageType === imageType);
               return (
-                <article key={imageType} className="admin-image-card">
+                <article key={imageType} className="admin-8fj3k2-3me77nfcb6c0-image-card">
                   <img src={currentImage?.publicUrl || noPhotoDataUrl} alt={`${imageTypeLabels[imageType]}プレビュー`} />
                   <strong>写真 {imageTypeLabels[imageType]}</strong>
                   <span>{currentImage ? '登録済み' : '未登録'}</span>
@@ -770,7 +770,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
         </section>
         <div className="action-row">
           <button type="submit" className="primary-button block" disabled={busy}>{busy ? '保存中...' : '保存'}</button>
-          <button type="button" className="secondary-button block admin-secondary" onClick={() => navigate('/admin/shops')} disabled={busy}>一覧へ戻る</button>
+          <button type="button" className="secondary-button block admin-8fj3k2-3me77nfcb6c0-secondary" onClick={() => navigate('/admin-8fj3k2-3me77nfcb6c0/shops')} disabled={busy}>一覧へ戻る</button>
         </div>
       </form>
     </main>
