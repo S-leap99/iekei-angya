@@ -1,0 +1,65 @@
+import type { Shop } from './types';
+import { noPhotoDataUrl } from './placeholders';
+
+export const defaultShops: Shop[] = [
+  {
+    id: '1',
+    name: '横浜家系 直伝家 本店',
+    origin: '吉村家系',
+    genealogy: '吉村家 → 直伝家',
+    tag: '直系',
+    address: '神奈川県横浜市西区南幸1-1-1',
+    station: '横浜駅 徒歩5分',
+    hours: '11:00-15:00\n17:00-22:00',
+    holiday: '火曜',
+    seats: 'カウンター 12 / テーブル 2',
+    parking: false,
+    officialUrl: 'https://example.com/shop/1',
+    lat: 35.4662,
+    lng: 139.6227,
+    image: noPhotoDataUrl,
+    images: [],
+    memo: '昼営業が安定。写真追加候補あり。',
+    updatedAt: '2026-03-20'
+  },
+  {
+    id: '2',
+    name: '濃厚家系 武骨家',
+    origin: '本牧家系',
+    genealogy: '本牧家 → 武骨家',
+    tag: '独立系',
+    address: '東京都新宿区西新宿2-2-2',
+    station: '新宿駅 徒歩7分',
+    hours: '10:30-23:00',
+    holiday: 'なし',
+    seats: 'カウンター 10 / テーブル 3',
+    parking: false,
+    officialUrl: 'https://example.com/shop/2',
+    lat: 35.6906,
+    lng: 139.692,
+    image: noPhotoDataUrl,
+    images: [],
+    memo: '終日混雑しやすい。',
+    updatedAt: '2026-03-19'
+  },
+  {
+    id: '3',
+    name: '家系ラーメン 松炎家',
+    origin: '杉田家系',
+    genealogy: '杉田家 → 松炎家',
+    tag: '独立系',
+    address: '千葉県千葉市中央区中央1-3-8',
+    station: '千葉駅 徒歩8分',
+    hours: '11:00-21:00',
+    holiday: '月曜',
+    seats: 'カウンター 8 / テーブル 2',
+    parking: true,
+    officialUrl: 'https://example.com/shop/3',
+    lat: 35.6074,
+    lng: 140.1065,
+    image: noPhotoDataUrl,
+    images: [],
+    memo: '駐車場3台。',
+    updatedAt: '2026-03-18'
+  }
+];
