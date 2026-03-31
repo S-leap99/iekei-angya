@@ -7,7 +7,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { defaultShops } from './lib/shopSeeds';
 import { noPhotoDataUrl } from './lib/placeholders';
 import { deleteShopImage, executeCsvImport, getConnectionLabel, getImageBucketName, listShops, previewCsvImport, removeShop, upsertShop, uploadShopImage } from './lib/shopService';
-import { getadminAuthState, signInadmin, signOutadmin } from './lib/authService';
+import { getAdminAuthState, signInAdmin, signOutAdmin } from './lib/authService';
 import type { CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag } from './lib/types';
 
 const originOptions = ['吉村家系', '本牧家系', '杉田家系'];
@@ -92,16 +92,16 @@ export default function App() {
         <Route path="/map" element={<MapPage shops={shopState.shops} />} />
         <Route path="/shops/:shopId" element={<ShopDetailPage shops={shopState.shops} />} />
         <Route path="/areas" element={<Navigate to="/shops" replace />} />
-        <Route path="/admin/login" element={<adminLoginPage />} />
-        <Route path="/admin" element={<adminRoute><adminTopPage shops={shopState.shops} /></adminRoute>} />
-        <Route path="/admin/shops" element={<adminRoute><adminShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></adminRoute>} />
-        <Route path="/admin/shops/:shopId" element={<adminRoute><adminEditPage shops={shopState.shops} onSaved={shopState.refresh} /></adminRoute>} />
+        <Route path="/admin/login" element={<AdminLoginPage />} />
+        <Route path="/admin" element={<AdminRoute><AdminTopPage shops={shopState.shops} /></AdminRoute>} />
+        <Route path="/admin/shops" element={<AdminRoute><AdminShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></AdminRoute>} />
+        <Route path="/admin/shops/:shopId" element={<AdminRoute><AdminEditPage shops={shopState.shops} onSaved={shopState.refresh} /></AdminRoute>} />
       </Routes>
     </div>
   );
 }
 
-function adminRoute({ children }: { children: ReactNode }) {
+function AdminRoute({ children }: { children: ReactNode }) {
   const location = useLocation();
   const [loading, setLoading] = useState(true);
   const [allowed, setAllowed] = useState(false);
@@ -110,9 +110,9 @@ function adminRoute({ children }: { children: ReactNode }) {
     let active = true;
     const run = async () => {
       try {
-        const state = await getadminAuthState();
+        const state = await getAdminAuthState();
         if (!active) return;
-        setAllowed(state.loggedIn && state.isadmin);
+        setAllowed(state.loggedIn && state.isAdmin);
       } catch {
         if (!active) return;
         setAllowed(false);
@@ -430,7 +430,7 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
   );
 }
 
-function adminLoginPage() {
+function AdminLoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const from = (location.state as { from?: string } | null)?.from ?? '/admin';
@@ -444,7 +444,7 @@ function adminLoginPage() {
     try {
       setBusy(true);
       setError('');
-      await signInadmin(email, password);
+      await signInAdmin(email, password);
       navigate(from, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'ログインに失敗しました。');
@@ -474,16 +474,16 @@ function adminLoginPage() {
   );
 }
 
-function adminTopPage({ shops }: { shops: Shop[] }) {
+function AdminTopPage({ shops }: { shops: Shop[] }) {
   const navigate = useNavigate();
-  const [adminEmail, setadminEmail] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
 
   useEffect(() => {
     let active = true;
-    void getadminAuthState().then((state) => {
-      if (active) setadminEmail(state.email);
+    void getAdminAuthState().then((state) => {
+      if (active) setAdminEmail(state.email);
     }).catch(() => {
-      if (active) setadminEmail('');
+      if (active) setAdminEmail('');
     });
     return () => {
       active = false;
@@ -491,7 +491,7 @@ function adminTopPage({ shops }: { shops: Shop[] }) {
   }, []);
 
   const logout = async () => {
-    await signOutadmin();
+    await signOutAdmin();
     navigate('/admin/login', { replace: true });
   };
 
@@ -520,7 +520,7 @@ function adminTopPage({ shops }: { shops: Shop[] }) {
   );
 }
 
-function adminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[]; loading: boolean; onDeleted: () => Promise<void>; onRefresh: () => Promise<void> }) {
+function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[]; loading: boolean; onDeleted: () => Promise<void>; onRefresh: () => Promise<void> }) {
   const [busyId, setBusyId] = useState('');
   const [message, setMessage] = useState('');
   const [searchText, setSearchText] = useState('');
@@ -650,7 +650,7 @@ function adminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
   );
 }
 
-function adminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promise<void> }) {
+function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promise<void> }) {
   const { shopId } = useParams();
   const navigate = useNavigate();
   const isNew = shopId === 'new';
