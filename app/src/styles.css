@@ -29,6 +29,52 @@ button { border: 0; cursor: pointer; }
 .eyebrow, .back-link { color: var(--muted-light); font-size: 12px; }
 .hero-card, .shop-card, .info-card, .detail-item, .csv-panel, .admin-row { background: rgba(255,255,255,0.96); color: var(--text); border-radius: 18px; box-shadow: 0 8px 24px rgba(0,0,0,0.24); }
 .hero-card { padding: 18px; }
+.home-page-compact {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.home-hero-card {
+  display: grid;
+  gap: 14px;
+  min-height: calc(100vh - 140px);
+  align-content: center;
+}
+.home-page {
+  background: transparent;
+}
+.home-logo {
+  display: block;
+  width: min(100%, 320px);
+  margin: 0 auto;
+}
+.home-title {
+  margin: 0;
+  text-align: center;
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+}
+.home-action-frame {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.24);
+  background: rgba(255,255,255,0.96);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.24);
+}
+.home-search-box {
+  margin-top: 0;
+}
+.home-search-box input,
+.home-search-box .primary-button,
+.home-cta-grid .primary-button {
+  border: 1px solid rgba(255,255,255,0.34);
+}
+.home-cta-grid {
+  margin-top: 0;
+}
 .hero-copy { font-size: 16px; line-height: 1.6; margin: 0 0 16px; }
 .search-box { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
 .stacked-mobile { grid-template-columns: 1fr auto; }
@@ -115,11 +161,13 @@ button { border: 0; cursor: pointer; }
 .lineage-chip { background: #111; color: #fff; }
 .map-frame { position: relative; margin-top: 12px; }
 .map-canvas {
+  position: relative;
   height: 54vh;
   border-radius: 24px;
   overflow: hidden;
   box-shadow: 0 12px 30px rgba(0,0,0,0.28);
   border: 1px solid rgba(255,255,255,0.08);
+  --map-safe-bottom: calc(env(safe-area-inset-bottom, 0px) + 42px);
 }
 .tall-map { height: 68vh; }
 .leaflet-map { width: 100%; height: 100%; }
@@ -136,20 +184,49 @@ button { border: 0; cursor: pointer; }
   border: 3px solid #ffffff;
   box-shadow: 0 0 0 6px rgba(37,99,235,0.18);
 }
-.fab-group { position: absolute; right: 12px; bottom: 120px; display: grid; gap: 8px; z-index: 500; }
+.fab-group { position: absolute; right: 12px; bottom: calc(var(--map-safe-bottom) + 8px); display: grid; gap: 8px; z-index: 500; }
+.fab-group-single { bottom: calc(var(--map-safe-bottom) + 8px); }
 .fab {
   height: 44px; padding: 0 14px; border-radius: 999px; background: rgba(255,255,255,0.96); color: var(--text);
   box-shadow: 0 8px 20px rgba(0,0,0,0.24);
 }
-.with-overlay-card { padding-bottom: 136px; }
+.with-overlay-card { }
 .map-overlay-card {
   position: absolute;
   left: 12px;
   right: 12px;
-  bottom: 52px;
+  bottom: calc(var(--map-safe-bottom) + 8px);
   z-index: 600;
+  max-height: calc(100% - var(--map-safe-bottom) - 76px);
+  overflow: auto;
 }
 .map-overlay-card .shop-card { margin-bottom: 0; }
+.map-card-close-button {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  background: rgba(15,15,15,0.88);
+  color: #fff;
+  font-size: 20px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+  box-shadow: 0 8px 18px rgba(0,0,0,0.24);
+}
+.map-overlay-card .shop-content {
+  padding-right: 48px;
+}
+/*
+.map-overlay-card {
+  border: 2px solid #000;
+  border-radius: 18px; /* ← カードと同じ値にする */
+}
+*/
 .hero-image { width: 100%; height: 240px; object-fit: cover; border-radius: 24px; display: block; }
 .detail-hero-carousel { margin-top: 4px; }
 .detail-hero-track { display: grid; grid-auto-flow: column; grid-auto-columns: 100%; gap: 12px; overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 4px; }
@@ -206,7 +283,7 @@ button { border: 0; cursor: pointer; }
 
 @media (max-width: 380px) {
   .filter-inline-row { grid-template-columns: 1fr; }
-  .stacked-mobile { grid-template-columns: 1fr; }
+  .stacked-mobile, .home-search-box { grid-template-columns: 1fr; }
 }
 
 @media (min-width: 768px) {
@@ -332,4 +409,8 @@ button { border: 0; cursor: pointer; }
   color: #047857;
   font-size: 13px;
   font-weight: 700;
+}
+
+.leaflet-control-attribution {
+  margin-bottom: env(safe-area-inset-bottom, 0px);
 }

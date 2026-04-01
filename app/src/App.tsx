@@ -136,44 +136,44 @@ function AdminRoute({ children }: { children: ReactNode }) {
   return children;
 }
 
-function Header({ title, backTo, eyebrow = '家系ラーメンポータル', backLabel = '← 戻る' }: { title: string; backTo?: string; eyebrow?: string; backLabel?: string }) {
+function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る' }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string }) {
   const location = useLocation();
-  const stateBackTo = (location.state as { backTo?: string } | null)?.backTo;
-  const resolvedBackTo = backTo ?? stateBackTo;
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
+  const resolvedBackTo = backTo ?? locationState?.backTo;
+  const resolvedBackState = backState ?? locationState?.backState;
 
   return (
     <header className="page-header">
       <div>
-        {resolvedBackTo ? <Link to={resolvedBackTo} className="back-link">{backLabel}</Link> : <span className="eyebrow">{eyebrow}</span>}
+        {resolvedBackTo ? <Link to={resolvedBackTo} state={resolvedBackState} className="back-link">{backLabel}</Link> : <span className="eyebrow">{eyebrow}</span>}
         <h1>{title}</h1>
       </div>
     </header>
   );
 }
 
-function HomePage({ shops }: { shops: Shop[] }) {
+function HomePage(_: { shops: Shop[] }) {
   const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
+
   return (
-    <main className="page home-page">
-      <Header title="家系ラーメンを探す" />
-      <section className="hero-card">
-        <p className="hero-copy">近くの店も、源流から巡る店も、迷わず探せるスマホ向けポータル。</p>
-        <div className="search-box">
+    <main className="page home-page home-page-compact">
+      <section className="home-hero-card">
+        <img className="home-logo" src="/iekei-angya-logo.png" alt="家系行脚" />
+        <p className="home-title">家系ラーメンを探す</p>
+        <div className="home-action-frame">
+          <div className="search-box home-search-box">
           <input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
             placeholder="店名 / 住所 / 源流 / 駅名で検索"
           />
           <button className="primary-button" onClick={() => navigate(`/shops?q=${encodeURIComponent(keyword)}`)}>検索</button>
+          </div>
+          <div className="cta-grid single-grid home-cta-grid">
+            <Link className="primary-button block" to="/map">近くで探す</Link>
+          </div>
         </div>
-        <div className="cta-grid single-grid">
-          <Link className="primary-button block" to="/map">近くで探す</Link>
-        </div>
-      </section>
-      <section className="section compact">
-        <div className="section-head"><h2>注目の店舗</h2><span>{shops.length}件</span></div>
-        {shops.slice(0, 2).map((shop) => <ShopCard key={shop.id} shop={shop} />)}
       </section>
       <BottomNav />
     </main>
@@ -280,7 +280,9 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
   const [userPosition, setUserPosition] = useState<[number, number] | null>(null);
   const [locationMessage, setLocationMessage] = useState('ピンを押すと店舗カードが開きます。');
-  const backTo = (location.state as { backTo?: string } | null)?.backTo ?? '/';
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
+  const backTo = locationState?.backTo ?? '/';
+  const backState = locationState?.backState;
 
   useEffect(() => {
     setSelectedShopId(initialSelected);
@@ -313,17 +315,16 @@ function MapPage({ shops }: { shops: Shop[] }) {
     );
   };
 
-  const handleReset = () => {
-    setUserPosition(null);
-    setSelectedShopId(initialSelected);
-    setLocationMessage(ids.length ? '検索結果に合う店舗が収まる表示に戻しました。' : '登録店舗全体が収まる表示に戻しました。');
+  const handleCloseCard = () => {
+    setSelectedShopId('');
+    setLocationMessage('店舗カードを閉じました。');
   };
 
   return (
     <main className="page map-page">
-      <Header title="マップ" backTo={backTo} />
-      <section className="map-frame with-overlay-card">
-        <div className="map-canvas tall-map">
+      <Header title="マップ" backTo={backTo} backState={backState} />
+      <section className="map-frame">
+        <div className="map-canvas tall-map with-overlay-card">
           <MapContainer center={mapCenter} zoom={12} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <MapViewportController center={userPosition ?? mapCenter} shops={visibleShops} fitToShops={!userPosition} selectedShop={selectedShop} />
@@ -340,16 +341,16 @@ function MapPage({ shops }: { shops: Shop[] }) {
             })}
             {userPosition ? <Marker position={userPosition} icon={currentLocationIcon} /> : null}
           </MapContainer>
-        </div>
-        <div className="fab-group">
-          <button className="fab" onClick={handleCurrentLocation}>現在地</button>
-          <button className="fab" onClick={handleReset}>再検索</button>
-        </div>
-        {selectedShop ? (
-          <div className="map-overlay-card">
-            <ShopCard shop={selectedShop} compact backTo={currentMapUrl} />
+          <div className="fab-group fab-group-single">
+            <button className="fab" onClick={handleCurrentLocation}>現在地</button>
           </div>
-        ) : null}
+          {selectedShop ? (
+            <div className="map-overlay-card">
+              <button type="button" className="map-card-close-button" aria-label="店舗カードを閉じる" onClick={handleCloseCard}>×</button>
+              <ShopCard shop={selectedShop} compact backTo={currentMapUrl} backState={{ backTo, backState }} />
+            </div>
+          ) : null}
+        </div>
       </section>
       <p className="map-status-text">{locationMessage}</p>
       <BottomNav />
@@ -385,8 +386,10 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
   const location = useLocation();
   const { shopId } = useParams();
   const shop = shops.find((item) => item.id === shopId) ?? null;
-  const backTo = (location.state as { backTo?: string } | null)?.backTo ?? '/shops';
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
+  const backTo = locationState?.backTo ?? '/shops';
   const mapLink = shop ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}` : '/map';
+  const detailUrl = shop ? `/shops/${shop.id}` : '/shops';
   if (!shop) return <main className="page"><Header title="店舗詳細" backTo={backTo} /><p>店舗が見つかりませんでした。</p></main>;
   return (
     <main className="page detail-page">
@@ -423,7 +426,7 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
         <DetailItem label="公式URL" value={shop.officialUrl || '未設定'} multiline />
       </section>
       <div className="action-row section compact">
-        <Link className="secondary-button block" to={mapLink} state={{ backTo }}>{'地図で見る'}</Link>
+        <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo } }}>{'地図で見る'}</Link>
       </div>
       <BottomNav />
     </main>
@@ -799,9 +802,9 @@ function buildDraft(shop: Shop | null): ShopDraft {
   };
 }
 
-function ShopCard({ shop, compact = false, backTo }: { shop: Shop; compact?: boolean; backTo?: string }) {
+function ShopCard({ shop, compact = false, backTo, backState }: { shop: Shop; compact?: boolean; backTo?: string; backState?: Record<string, unknown> }) {
   return (
-    <Link to={`/shops/${shop.id}`} state={backTo ? { backTo } : undefined} className={`shop-card ${compact ? 'compact-card' : ''}`}>
+    <Link to={`/shops/${shop.id}`} state={backTo ? { backTo, backState } : undefined} className={`shop-card ${compact ? 'compact-card' : ''}`}>
       <img src={getPrimaryShopImage(shop)} alt={shop.name} />
       <div className="shop-content">
         <div className="shop-meta">
