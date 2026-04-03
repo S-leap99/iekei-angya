@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ChangeEvent, FormEvent, ReactNode } from 'react';
 import { MapContainer, Marker, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -136,17 +136,17 @@ function AdminRoute({ children }: { children: ReactNode }) {
   return children;
 }
 
-function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る' }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string }) {
+function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る', className = '', hideTitle = false }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string; className?: string; hideTitle?: boolean }) {
   const location = useLocation();
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
   const resolvedBackTo = backTo ?? locationState?.backTo;
   const resolvedBackState = backState ?? locationState?.backState;
 
   return (
-    <header className="page-header">
+    <header className={`page-header ${className}`.trim()}>
       <div>
         {resolvedBackTo ? <Link to={resolvedBackTo} state={resolvedBackState} className="back-link">{backLabel}</Link> : <span className="eyebrow">{eyebrow}</span>}
-        <h1>{title}</h1>
+        {hideTitle ? null : <h1>{title}</h1>}
       </div>
     </header>
   );
@@ -171,7 +171,7 @@ function HomePage(_: { shops: Shop[] }) {
           <button className="primary-button" onClick={() => navigate(`/shops?q=${encodeURIComponent(keyword)}`)}>検索</button>
           </div>
           <div className="cta-grid single-grid home-cta-grid">
-            <Link className="primary-button block" to="/map">近くで探す</Link>
+            <Link className="primary-button block" to="/map" state={{ autoLocate: true }}>近くで探す</Link>
           </div>
         </div>
       </section>
@@ -278,9 +278,9 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const visibleShops = ids.length ? shops.filter((shop) => ids.includes(shop.id)) : shops;
   const [selectedShopId, setSelectedShopId] = useState(initialSelected);
   const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
+  const [mapZoom, setMapZoom] = useState(12);
   const [userPosition, setUserPosition] = useState<[number, number] | null>(null);
-  const [locationMessage, setLocationMessage] = useState('ピンを押すと店舗カードが開きます。');
-  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; autoLocate?: boolean } | null) ?? null;
   const backTo = locationState?.backTo ?? '/';
   const backState = locationState?.backState;
 
@@ -297,9 +297,8 @@ function MapPage({ shops }: { shops: Shop[] }) {
     return query ? `?${query}` : '';
   })()}`;
 
-  const handleCurrentLocation = () => {
+  const handleCurrentLocation = useCallback(() => {
     if (!navigator.geolocation) {
-      setLocationMessage('この端末では現在地取得に対応していません。');
       return;
     }
 
@@ -308,26 +307,31 @@ function MapPage({ shops }: { shops: Shop[] }) {
         const nextPosition: [number, number] = [position.coords.latitude, position.coords.longitude];
         setUserPosition(nextPosition);
         setMapCenter(nextPosition);
-        setLocationMessage('現在地の周辺に地図を移動しました。');
+        setMapZoom(15);
+        setSelectedShopId('');
       },
-      () => setLocationMessage('現在地を取得できませんでした。端末の位置情報設定を確認してください。'),
-      { enableHighAccuracy: true, timeout: 8000 }
+      undefined,
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
     );
-  };
+  }, []);
+
+  useEffect(() => {
+    if (!locationState?.autoLocate || userPosition) return;
+    handleCurrentLocation();
+  }, [handleCurrentLocation, locationState?.autoLocate, userPosition]);
 
   const handleCloseCard = () => {
     setSelectedShopId('');
-    setLocationMessage('店舗カードを閉じました。');
   };
 
   return (
     <main className="page map-page">
-      <Header title="マップ" backTo={backTo} backState={backState} />
-      <section className="map-frame">
-        <div className="map-canvas tall-map with-overlay-card">
-          <MapContainer center={mapCenter} zoom={12} scrollWheelZoom touchZoom className="leaflet-map">
+      <Header title="マップ" backTo={backTo} backState={backState} className="map-page-header" hideTitle />
+      <section className="map-frame full-bleed-map-frame">
+        <div className="map-canvas full-bleed-map with-overlay-card">
+          <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} shops={visibleShops} fitToShops={!userPosition} selectedShop={selectedShop} />
+            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : undefined} shops={visibleShops} fitToShops={!userPosition} selectedShop={selectedShop} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
@@ -352,8 +356,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
           ) : null}
         </div>
       </section>
-      <p className="map-status-text">{locationMessage}</p>
-      <BottomNav />
+      <BottomNav className="map-bottom-nav" />
     </main>
   );
 }
@@ -365,7 +368,7 @@ const currentLocationIcon = L.divIcon({
   iconAnchor: [9, 9]
 });
 
-function MapViewportController({ center, shops, fitToShops, selectedShop }: { center: [number, number]; shops: Shop[]; fitToShops: boolean; selectedShop: Shop | null }) {
+function MapViewportController({ center, targetZoom, shops, fitToShops, selectedShop }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; selectedShop: Shop | null }) {
   const map = useMap();
   useEffect(() => {
     if (selectedShop) {
@@ -377,8 +380,8 @@ function MapViewportController({ center, shops, fitToShops, selectedShop }: { ce
       map.fitBounds(bounds, { padding: [36, 36], animate: true, maxZoom: shops.length === 1 ? 15 : 13 });
       return;
     }
-    map.setView(center, map.getZoom(), { animate: true });
-  }, [center, fitToShops, map, selectedShop, shops]);
+    map.setView(center, targetZoom ?? map.getZoom(), { animate: true });
+  }, [center, fitToShops, map, selectedShop, shops, targetZoom]);
   return null;
 }
 
@@ -832,9 +835,9 @@ function DetailItem({ label, value, multiline = false }: { label: string; value:
   );
 }
 
-function BottomNav() {
+function BottomNav({ className = '' }: { className?: string }) {
   return (
-    <nav className="bottom-nav three-col">
+    <nav className={`bottom-nav three-col ${className}`.trim()}>
       <Link to="/">トップ</Link>
       <Link to="/map">マップ</Link>
       <Link to="/shops">結果一覧</Link>
