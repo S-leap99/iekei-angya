@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, ReactNode } from 'react';
 import { MapContainer, Marker, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -60,11 +60,110 @@ function normalizeText(value: string) {
   return value.trim().toLowerCase();
 }
 
+type SearchFilters = {
+  q: string;
+  origin: string;
+  tag: Tag | '';
+  parking: boolean | null;
+};
+
+type MapEntrySource = 'home' | 'searchResults' | 'detail';
+
+type OsmSearchResult = {
+  name: string;
+  center: [number, number];
+};
+
+const osmRequestCooldownMs = 1800;
+
 function shopMatchesKeyword(shop: Shop, keyword: string) {
   const term = normalizeText(keyword);
   if (!term) return true;
-  const target = [shop.name, shop.origin, shop.genealogy, shop.station, shop.address].join(' ').toLowerCase();
+  const target = [shop.name, shop.address, shop.station].join(' ').toLowerCase();
   return target.includes(term);
+}
+
+function filterShops(shops: Shop[], filters: SearchFilters) {
+  return shops.filter((shop) => {
+    const hitKeyword = shopMatchesKeyword(shop, filters.q);
+    const hitOrigin = !filters.origin || shop.origin === filters.origin;
+    const hitTag = !filters.tag || shop.tag === filters.tag;
+    const hitParking = filters.parking === null || shop.parking === filters.parking;
+    return hitKeyword && hitOrigin && hitTag && hitParking;
+  });
+}
+
+function readSearchFilters(searchParams: URLSearchParams): SearchFilters {
+  const tag = (searchParams.get('tag') as Tag | null) ?? '';
+  const parkingParam = searchParams.get('parking');
+  return {
+    q: searchParams.get('q') ?? '',
+    origin: searchParams.get('origin') ?? '',
+    tag,
+    parking: parkingParam === 'true' ? true : parkingParam === 'false' ? false : null,
+  };
+}
+
+function buildSearchParams(filters: SearchFilters) {
+  const next = new URLSearchParams();
+  if (filters.q.trim()) next.set('q', filters.q.trim());
+  if (filters.origin) next.set('origin', filters.origin);
+  if (filters.tag) next.set('tag', filters.tag);
+  if (filters.parking !== null) next.set('parking', String(filters.parking));
+  return next;
+}
+
+function buildSearchUrl(filters: SearchFilters) {
+  const query = buildSearchParams(filters).toString();
+  return `/shops${query ? `?${query}` : ''}`;
+}
+
+
+function useClickOutside<T extends HTMLElement>(onOutsideClick: () => void, enabled = true) {
+  const ref = useRef<T | null>(null);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!ref.current) return;
+      const target = event.target;
+      if (target instanceof Node && !ref.current.contains(target)) {
+        onOutsideClick();
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [enabled, onOutsideClick]);
+
+  return ref;
+}
+
+async function searchOsmPlace(keyword: string): Promise<OsmSearchResult | null> {
+  const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(keyword)}`, {
+    headers: {
+      'Accept': 'application/json',
+      'Accept-Language': 'ja',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error('地点検索に失敗しました。時間をおいてもう一度お試しください。');
+  }
+
+  const rows = await response.json() as Array<{ lat?: string; lon?: string; display_name?: string }>;
+  const first = rows[0];
+  if (!first?.lat || !first?.lon) return null;
+
+  return {
+    name: first.display_name?.trim() || keyword,
+    center: [Number(first.lat), Number(first.lon)],
+  };
 }
 
 function formatHoursInline(hours: string) {
@@ -166,7 +265,7 @@ function HomePage(_: { shops: Shop[] }) {
           <input
             value={keyword}
             onChange={(e) => setKeyword(e.target.value)}
-            placeholder="店名 / 住所 / 源流 / 駅名で検索"
+            placeholder="店名 / 住所 / 最寄り駅で検索"
           />
           <button className="primary-button" onClick={() => navigate(`/shops?q=${encodeURIComponent(keyword)}`)}>検索</button>
           </div>
@@ -182,45 +281,23 @@ function HomePage(_: { shops: Shop[] }) {
 
 function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const keyword = searchParams.get('q') ?? '';
-  const origin = searchParams.get('origin') ?? '';
-  const tag = (searchParams.get('tag') as Tag | null) ?? '';
-  const parkingParam = searchParams.get('parking');
-  const parking = parkingParam === 'true' ? true : parkingParam === 'false' ? false : null;
-  const [searchText, setSearchText] = useState(keyword);
+  const filters = readSearchFilters(searchParams);
+  const [searchText, setSearchText] = useState(filters.q);
 
   useEffect(() => {
-    setSearchText(keyword);
-  }, [keyword]);
+    setSearchText(filters.q);
+  }, [filters.q]);
 
-  const filtered = useMemo(() => shops.filter((shop) => {
-    const hitKeyword = shopMatchesKeyword(shop, keyword);
-    const hitOrigin = !origin || shop.origin === origin;
-    const hitTag = !tag || shop.tag === tag;
-    const hitParking = parking === null || shop.parking === parking;
-    return hitKeyword && hitOrigin && hitTag && hitParking;
-  }), [keyword, origin, tag, parking, shops]);
+  const filtered = useMemo(() => filterShops(shops, filters), [filters, shops]);
 
-  const updateFilters = (nextValues: { q?: string; origin?: string; tag?: Tag | ''; parking?: boolean | null }) => {
-    const next = new URLSearchParams(searchParams);
-    const nextKeyword = nextValues.q ?? keyword;
-    const nextOrigin = nextValues.origin ?? origin;
-    const nextTag = nextValues.tag ?? tag;
-    const nextParking = nextValues.parking === undefined ? parking : nextValues.parking;
-
-    if (nextKeyword.trim()) next.set('q', nextKeyword.trim());
-    else next.delete('q');
-
-    if (nextOrigin) next.set('origin', nextOrigin);
-    else next.delete('origin');
-
-    if (nextTag) next.set('tag', nextTag);
-    else next.delete('tag');
-
-    if (nextParking === null) next.delete('parking');
-    else next.set('parking', String(nextParking));
-
-    setSearchParams(next, { replace: true });
+  const updateFilters = (nextValues: Partial<SearchFilters>) => {
+    const nextFilters: SearchFilters = {
+      q: nextValues.q ?? filters.q,
+      origin: nextValues.origin ?? filters.origin,
+      tag: nextValues.tag ?? filters.tag,
+      parking: nextValues.parking === undefined ? filters.parking : nextValues.parking,
+    };
+    setSearchParams(buildSearchParams(nextFilters), { replace: true });
   };
 
   const handleSearchSubmit = (event: FormEvent) => {
@@ -228,29 +305,36 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
     updateFilters({ q: searchText });
   };
 
-  const currentSearchUrl = `/shops${searchParams.toString() ? `?${searchParams.toString()}` : ''}`;
-  const mapLink = `/map?ids=${encodeURIComponent(filtered.map((shop) => shop.id).join(','))}`;
+  const currentSearchUrl = buildSearchUrl(filters);
+  const mapLink = `/map${(() => {
+    const query = buildSearchParams(filters).toString();
+    return query ? `?${query}` : '';
+  })()}`;
 
   return (
     <main className="page">
       <Header title="検索結果" backTo="/" />
       <section className="sticky-panel">
         <form onSubmit={handleSearchSubmit} className="search-box stacked-mobile">
-          <input className="full-input" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="店名 / 住所 / 源流 / 駅名" />
+          <input className="full-input" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="店名 / 住所 / 最寄り駅" />
           <button type="submit" className="primary-button">検索</button>
         </form>
         <div className="filter-inline-row">
-          <select className={`filter-select ${origin ? 'is-active' : ''}`} value={origin} onChange={(e) => updateFilters({ origin: e.target.value })}>
-            <option value="">源流</option>
-            {originOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-          <select className={`filter-select ${tag ? 'is-active' : ''}`} value={tag} onChange={(e) => updateFilters({ tag: e.target.value as Tag | '' })}>
-            <option value="">直系/独立系/資本系</option>
-            {tags.map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
-          <div className={`toggle-filter ${parking !== null ? 'is-active' : ''}`}>
-            <button type="button" className={parking === true ? 'is-selected' : ''} onClick={() => updateFilters({ parking: parking === true ? null : true })}>駐車場あり</button>
-            <button type="button" className={parking === false ? 'is-selected' : ''} onClick={() => updateFilters({ parking: parking === false ? null : false })}>駐車場なし</button>
+          <FilterDropdown
+            placeholder="源流"
+            value={filters.origin}
+            options={originOptions.map((item) => ({ value: item, label: item }))}
+            onChange={(value) => updateFilters({ origin: value })}
+          />
+          <FilterDropdown
+            placeholder="直/独/資"
+            value={filters.tag}
+            options={tags.map((item) => ({ value: item, label: item }))}
+            onChange={(value) => updateFilters({ tag: value as Tag | '' })}
+          />
+          <div className={`toggle-filter ${filters.parking !== null ? 'is-active' : ''}`}>
+            <button type="button" className={filters.parking === true ? 'is-selected' : ''} onClick={() => updateFilters({ parking: filters.parking === true ? null : true })}>駐車場あり</button>
+            <button type="button" className={filters.parking === false ? 'is-selected' : ''} onClick={() => updateFilters({ parking: filters.parking === false ? null : false })}>駐車場なし</button>
           </div>
         </div>
       </section>
@@ -259,7 +343,7 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
           <h2>検索結果</h2>
           <div className="section-head-actions">
             <span>{loading ? '読み込み中' : `${filtered.length}件`}</span>
-            <Link to={mapLink} state={{ backTo: currentSearchUrl }} className="text-link">地図で見る</Link>
+            <Link to={mapLink} state={{ backTo: currentSearchUrl, entrySource: 'searchResults' as MapEntrySource }} className="text-link">地図で見る</Link>
           </div>
         </div>
         {filtered.map((shop) => <ShopCard key={shop.id} shop={shop} backTo={currentSearchUrl} />)}
@@ -271,31 +355,77 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
 }
 
 function MapPage({ shops }: { shops: Shop[] }) {
+  const navigate = useNavigate();
   const location = useLocation();
-  const [searchParams] = useSearchParams();
-  const ids = (searchParams.get('ids') ?? '').split(',').filter(Boolean);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialFilters = useMemo(() => readSearchFilters(searchParams), [searchParams]);
+  const ids = useMemo(() => (searchParams.get('ids') ?? '').split(',').filter(Boolean), [searchParams]);
   const initialSelected = searchParams.get('selected') ?? '';
-  const visibleShops = ids.length ? shops.filter((shop) => ids.includes(shop.id)) : shops;
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; autoLocate?: boolean; entrySource?: MapEntrySource } | null) ?? null;
+  const initialEntrySource: MapEntrySource = locationState?.entrySource ?? (locationState?.backTo?.startsWith('/shops') ? 'searchResults' : 'home');
+  const [entrySource, setEntrySource] = useState<MapEntrySource>(initialEntrySource);
+  const [hasMapSearched, setHasMapSearched] = useState(false);
   const [selectedShopId, setSelectedShopId] = useState(initialSelected);
+  const [searchText, setSearchText] = useState(initialFilters.q);
+  const [activeFilters, setActiveFilters] = useState<SearchFilters>(initialFilters);
+  const [draftFilters, setDraftFilters] = useState<SearchFilters>(initialFilters);
+  const [expanded, setExpanded] = useState(initialEntrySource === 'searchResults' && !!(initialFilters.q || initialFilters.origin || initialFilters.tag || initialFilters.parking !== null));
+  const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id)) : filterShops(shops, initialFilters));
   const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
   const [mapZoom, setMapZoom] = useState(12);
+  const [fitToShops, setFitToShops] = useState<boolean>(() => !ids.length);
   const [userPosition, setUserPosition] = useState<[number, number] | null>(null);
-  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; autoLocate?: boolean } | null) ?? null;
-  const backTo = locationState?.backTo ?? '/';
-  const backState = locationState?.backState;
+  const [searchMessage, setSearchMessage] = useState('');
+  const [isOsmSearching, setIsOsmSearching] = useState(false);
+  const lastOsmRequestAtRef = useRef(0);
+
+  useEffect(() => {
+    setEntrySource(initialEntrySource);
+  }, [initialEntrySource]);
 
   useEffect(() => {
     setSelectedShopId(initialSelected);
-  }, [initialSelected, searchParams.toString()]);
+  }, [initialSelected]);
+
+  useEffect(() => {
+    setSearchText(initialFilters.q);
+    setActiveFilters(initialFilters);
+    setDraftFilters(initialFilters);
+    if (ids.length) {
+      setVisibleShops(shops.filter((shop) => ids.includes(shop.id)));
+      setFitToShops(false);
+    } else {
+      const nextVisible = filterShops(shops, initialFilters);
+      setVisibleShops(nextVisible);
+      setFitToShops(true);
+    }
+    setSearchMessage('');
+  }, [ids, initialFilters, shops]);
+
+  useEffect(() => {
+    if (selectedShopId && !visibleShops.some((shop) => shop.id === selectedShopId)) {
+      setSelectedShopId('');
+    }
+  }, [selectedShopId, visibleShops]);
 
   const selectedShop = visibleShops.find((shop) => shop.id === selectedShopId) ?? null;
-  const currentMapUrl = `/map${(() => {
-    const params = new URLSearchParams(searchParams);
+
+  useEffect(() => {
+    if (!searchMessage) return;
+    const timer = window.setTimeout(() => setSearchMessage(''), 3000);
+    return () => window.clearTimeout(timer);
+  }, [searchMessage]);
+
+  const currentMapUrl = useMemo(() => {
+    const params = hasMapSearched ? buildSearchParams(activeFilters) : new URLSearchParams(searchParams);
     if (selectedShopId) params.set('selected', selectedShopId);
     else params.delete('selected');
     const query = params.toString();
-    return query ? `?${query}` : '';
-  })()}`;
+    return `/map${query ? `?${query}` : ''}`;
+  }, [activeFilters, hasMapSearched, searchParams, selectedShopId]);
+
+  const backTarget = hasMapSearched ? '/' : (entrySource === 'searchResults' ? (locationState?.backTo ?? buildSearchUrl(activeFilters)) : '/');
+  const backState = hasMapSearched ? undefined : locationState?.backState;
 
   const handleCurrentLocation = useCallback(() => {
     if (!navigator.geolocation) {
@@ -308,7 +438,9 @@ function MapPage({ shops }: { shops: Shop[] }) {
         setUserPosition(nextPosition);
         setMapCenter(nextPosition);
         setMapZoom(15);
+        setFitToShops(false);
         setSelectedShopId('');
+        setSearchMessage('');
       },
       undefined,
       { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
@@ -320,18 +452,106 @@ function MapPage({ shops }: { shops: Shop[] }) {
     handleCurrentLocation();
   }, [handleCurrentLocation, locationState?.autoLocate, userPosition]);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousBodyOverscroll = document.body.style.overscrollBehavior;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    const previousHtmlOverscroll = document.documentElement.style.overscrollBehavior;
+
+    document.body.style.overflow = 'hidden';
+    document.body.style.overscrollBehavior = 'none';
+    document.documentElement.style.overflow = 'hidden';
+    document.documentElement.style.overscrollBehavior = 'none';
+
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      document.body.style.overscrollBehavior = previousBodyOverscroll;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+      document.documentElement.style.overscrollBehavior = previousHtmlOverscroll;
+    };
+  }, []);
+
   const handleCloseCard = () => {
     setSelectedShopId('');
   };
 
+  const applyMapSearch = async (event?: FormEvent) => {
+    event?.preventDefault();
+    const nextFilters: SearchFilters = { ...draftFilters, q: searchText };
+    setDraftFilters(nextFilters);
+    setActiveFilters(nextFilters);
+    setHasMapSearched(true);
+    setEntrySource('home');
+    setSelectedShopId('');
+    setSearchMessage('');
+    setUserPosition(null);
+
+    const nextVisibleShops = filterShops(shops, nextFilters);
+    setVisibleShops(nextVisibleShops);
+    setSearchParams(buildSearchParams(nextFilters), { replace: true });
+
+    if (nextVisibleShops.length) {
+      setFitToShops(true);
+      setUserPosition(null);
+      return;
+    }
+
+    const keyword = nextFilters.q.trim();
+    if (!keyword) {
+      setFitToShops(false);
+      setMapCenter(defaultCenter);
+      setMapZoom(12);
+      return;
+    }
+
+    const now = Date.now();
+    const waitMs = lastOsmRequestAtRef.current ? osmRequestCooldownMs - (now - lastOsmRequestAtRef.current) : 0;
+    if (waitMs > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+    }
+
+    try {
+      setIsOsmSearching(true);
+      lastOsmRequestAtRef.current = Date.now();
+      const result = await searchOsmPlace(keyword);
+      if (!result) {
+        setSearchMessage('登録のない地点のため、場所が見つかりませんでした');
+        setFitToShops(false);
+        return;
+      }
+      setMapCenter(result.center);
+      setMapZoom(15);
+      setFitToShops(false);
+    } catch (err) {
+      setSearchMessage(err instanceof Error ? err.message : '地点検索に失敗しました。');
+      setFitToShops(false);
+    } finally {
+      setIsOsmSearching(false);
+    }
+  };
+
   return (
     <main className="page map-page">
-      <Header title="マップ" backTo={backTo} backState={backState} className="map-page-header" hideTitle />
+      <MapSearchHeader
+        value={searchText}
+        onValueChange={setSearchText}
+        onBack={() => navigate(backTarget, backState ? { state: backState } : undefined)}
+        expanded={expanded}
+        onToggleExpanded={() => setExpanded((current) => !current)}
+        onCollapse={() => setExpanded(false)}
+        filters={draftFilters}
+        onFiltersChange={setDraftFilters}
+        onSearch={applyMapSearch}
+        searching={isOsmSearching}
+        message={searchMessage}
+      />
       <section className="map-frame full-bleed-map-frame">
-        <div className="map-canvas full-bleed-map with-overlay-card">
+        <div className="map-canvas full-bleed-map with-overlay-card has-map-search-ui">
           <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : undefined} shops={visibleShops} fitToShops={!userPosition} selectedShop={selectedShop} />
+            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} selectedShop={selectedShop} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
@@ -351,13 +571,139 @@ function MapPage({ shops }: { shops: Shop[] }) {
           {selectedShop ? (
             <div className="map-overlay-card">
               <button type="button" className="map-card-close-button" aria-label="店舗カードを閉じる" onClick={handleCloseCard}>×</button>
-              <ShopCard shop={selectedShop} compact backTo={currentMapUrl} backState={{ backTo, backState }} />
+              <ShopCard shop={selectedShop} compact backTo={currentMapUrl} backState={{ backTo: backTarget, backState, entrySource: hasMapSearched ? 'home' : entrySource }} />
             </div>
           ) : null}
         </div>
       </section>
       <BottomNav className="map-bottom-nav" />
     </main>
+  );
+}
+
+function MapSearchHeader({
+  value,
+  onValueChange,
+  onBack,
+  expanded,
+  onToggleExpanded,
+  onCollapse,
+  filters,
+  onFiltersChange,
+  onSearch,
+  searching,
+  message,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  onBack: () => void;
+  expanded: boolean;
+  onToggleExpanded: () => void;
+  onCollapse: () => void;
+  filters: SearchFilters;
+  onFiltersChange: (value: SearchFilters) => void;
+  onSearch: (event?: FormEvent) => Promise<void>;
+  searching: boolean;
+  message: string;
+}) {
+  const shellRef = useClickOutside<HTMLDivElement>(() => onCollapse(), expanded);
+
+  return (
+    <header className="map-search-shell" ref={shellRef}>
+      <form className={`map-search-header ${expanded ? 'is-expanded' : ''}`} onSubmit={(event) => { void onSearch(event); }}>
+        <button type="button" className="map-back-button" aria-label="戻る" onClick={onBack}>＜</button>
+        <div className="map-search-input-wrap" onClick={() => { if (!expanded) onToggleExpanded(); }}>
+          <input
+            value={value}
+            onChange={(event) => onValueChange(event.target.value)}
+            onFocus={() => { if (!expanded) onToggleExpanded(); }}
+            placeholder="店名 / 住所 / 最寄り駅 / 地点名"
+          />
+        </div>
+        <button type="submit" className="map-search-submit" disabled={searching}>{searching ? '検索中...' : '検索'}</button>
+        {expanded ? (
+          <div className="map-search-filters">
+            <div className="filter-inline-row map-filter-inline-row">
+              <FilterDropdown
+                placeholder="源流"
+                value={filters.origin}
+                options={originOptions.map((item) => ({ value: item, label: item }))}
+                onChange={(value) => onFiltersChange({ ...filters, origin: value })}
+              />
+              <FilterDropdown
+                placeholder="直/独/資"
+                value={filters.tag}
+                options={tags.map((item) => ({ value: item, label: item }))}
+                onChange={(value) => onFiltersChange({ ...filters, tag: value as Tag | '' })}
+              />
+              <div className={`toggle-filter ${filters.parking !== null ? 'is-active' : ''}`}>
+                <button type="button" className={filters.parking === true ? 'is-selected' : ''} onClick={() => onFiltersChange({ ...filters, parking: filters.parking === true ? null : true })}>駐車場あり</button>
+                <button type="button" className={filters.parking === false ? 'is-selected' : ''} onClick={() => onFiltersChange({ ...filters, parking: filters.parking === false ? null : false })}>駐車場なし</button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </form>
+      {message ? <p className="map-search-message">{message}</p> : null}
+    </header>
+  );
+}
+
+
+type FilterOption = {
+  value: string;
+  label: string;
+};
+
+function FilterDropdown({
+  placeholder,
+  value,
+  options,
+  onChange,
+}: {
+  placeholder: string;
+  value: string;
+  options: FilterOption[];
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useClickOutside<HTMLDivElement>(() => setOpen(false), open);
+  const selected = options.find((item) => item.value === value);
+
+  return (
+    <div className={`filter-dropdown ${value ? 'is-active' : ''}`} ref={wrapperRef}>
+      <button
+        type="button"
+        className={`filter-select-button ${value ? 'is-active' : ''}`}
+        onClick={() => setOpen((current) => !current)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      >
+        <span>{selected?.label ?? placeholder}</span>
+        <span className="filter-select-caret">▾</span>
+      </button>
+      {open ? (
+        <div className="filter-dropdown-menu" role="listbox">
+          <button
+            type="button"
+            className={`filter-dropdown-option ${!value ? 'is-selected' : ''}`}
+            onClick={() => { onChange(''); setOpen(false); }}
+          >
+            {placeholder}
+          </button>
+          {options.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={`filter-dropdown-option ${value === item.value ? 'is-selected' : ''}`}
+              onClick={() => { onChange(item.value); setOpen(false); }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -370,9 +716,27 @@ const currentLocationIcon = L.divIcon({
 
 function MapViewportController({ center, targetZoom, shops, fitToShops, selectedShop }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; selectedShop: Shop | null }) {
   const map = useMap();
+
   useEffect(() => {
     if (selectedShop) {
-      map.setView([selectedShop.lat, selectedShop.lng], Math.max(map.getZoom(), 15), { animate: true });
+      const nextZoom = Math.max(map.getZoom(), 15);
+      const mapRect = map.getContainer().getBoundingClientRect();
+      const searchRect = document.querySelector('.map-search-shell')?.getBoundingClientRect();
+      const cardRect = document.querySelector('.map-overlay-card')?.getBoundingClientRect();
+      const navRect = document.querySelector('.map-bottom-nav')?.getBoundingClientRect();
+
+      const topBoundary = Math.max(12, (searchRect?.bottom ?? mapRect.top) - mapRect.top + 12);
+      const lowerLimit = Math.min(cardRect?.top ?? Number.POSITIVE_INFINITY, navRect?.top ?? Number.POSITIVE_INFINITY);
+      const bottomBoundary = Math.min(mapRect.height - 12, lowerLimit - mapRect.top - 12);
+      const targetX = mapRect.width / 2;
+      const targetY = bottomBoundary > topBoundary ? topBoundary + ((bottomBoundary - topBoundary) / 2) : mapRect.height / 2;
+
+      const size = map.getSize();
+      const projectedPin = map.project(L.latLng(selectedShop.lat, selectedShop.lng), nextZoom);
+      const desiredCenterPoint = projectedPin.add(L.point((size.x / 2) - targetX, (size.y / 2) - targetY));
+      const desiredCenter = map.unproject(desiredCenterPoint, nextZoom);
+
+      map.setView(desiredCenter, nextZoom, { animate: true });
       return;
     }
     if (fitToShops && shops.length) {
@@ -566,7 +930,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
       const preview = await previewCsvImport(text);
       setCsvPreview(preview);
       setCsvFileName(file.name);
-      setCsvStatus(`プレビュー完了: ${preview.readyCount}件を追加できます / エラー ${preview.errorCount}件`);
+      setCsvStatus(`プレビュー完了: 追加 ${preview.createCount}件 / 更新 ${preview.updateCount}件 / エラー ${preview.errorCount}件`);
     } catch (err) {
       setCsvStatus(err instanceof Error ? err.message : 'CSVの読み込みに失敗しました。');
       setCsvPreview(null);
@@ -583,11 +947,12 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
       setCsvBusy(true);
       const result = await executeCsvImport(csvPreview.validRows);
       await onRefresh();
-      setCsvStatus(`取込完了: 追加 ${result.importedCount}件 / エラー ${csvPreview.errorCount}件`);
+      setCsvStatus(`取込完了: 追加 ${result.createdCount}件 / 更新 ${result.updatedCount}件 / エラー ${csvPreview.errorCount}件`);
       setCsvPreview(null);
       setCsvFileName('');
       window.alert(`CSV取込が完了しました。
-追加: ${result.importedCount}件
+追加: ${result.createdCount}件
+更新: ${result.updatedCount}件
 エラー: ${csvPreview.errorCount}件`);
     } catch (err) {
       setCsvStatus(err instanceof Error ? err.message : 'CSV取込に失敗しました。');
@@ -605,16 +970,16 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
         <span>{loading ? '読み込み中' : `${filteredShops.length}件を表示中`}</span>
       </section>
       <section className="section compact csv-panel">
-        <div className="section-head"><h2>CSV一括インポート</h2><span>新規追加のみ</span></div>
+        <div className="section-head"><h2>CSV一括インポート</h2><span>追加・更新対応</span></div>
         <p>{csvStatus}</p>
-        <p className="csv-help">列名は name,tag,address,station,hours,holiday,seats,parking,official_url,lat,lng,image,memo,origin,genealogy の順で入力してください。画像ファイルはCSVでは取り込みません。</p>
+        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,seats,parking,official_url,lat,lng,image,memo,origin,genealogy の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。画像ファイルはCSVでは取り込みません。</p>
         <input type="file" accept=".csv" onChange={handleCsvSelect} disabled={csvBusy} />
         {csvFileName ? <p className="csv-help">選択中: {csvFileName}</p> : null}
         {csvPreview ? (
           <div className="csv-preview-box">
             <div className="csv-preview-summary">
               <strong>取込前プレビュー</strong>
-              <span>追加予定 {csvPreview.readyCount}件 / エラー {csvPreview.errorCount}件 / 読み込み {csvPreview.totalRows}件</span>
+              <span>追加予定 {csvPreview.createCount}件 / 更新予定 {csvPreview.updateCount}件 / エラー {csvPreview.errorCount}件 / 読み込み {csvPreview.totalRows}件</span>
             </div>
             <div className="csv-preview-list">
               {csvPreview.previewRows.map((row) => (
@@ -622,15 +987,16 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
                   <div>
                     <strong>{row.lineNumber}行目: {row.name}</strong>
                     <p>{row.address || '住所未入力'}</p>
+                    {row.id ? <p className="csv-help">ID: {row.id}</p> : null}
                   </div>
                   <div>
-                    {row.status === 'ready' ? <span className="csv-ready-badge">追加予定</span> : <ul>{row.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
+                    {row.status === 'create' ? <span className="csv-ready-badge">追加予定</span> : row.status === 'update' ? <span className="csv-ready-badge">更新予定</span> : <ul>{row.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
                   </div>
                 </article>
               ))}
             </div>
             <div className="action-row">
-              <button type="button" className="primary-button block" onClick={handleCsvImport} disabled={csvBusy || csvPreview.readyCount === 0}>{csvBusy ? '取込中...' : 'この内容で取り込む'}</button>
+              <button type="button" className="primary-button block" onClick={handleCsvImport} disabled={csvBusy || (csvPreview.createCount + csvPreview.updateCount) === 0}>{csvBusy ? '取込中...' : 'この内容で取り込む'}</button>
               <button type="button" className="secondary-button block admin-secondary" onClick={() => { setCsvPreview(null); setCsvStatus('CSVをまだ読み込んでいません'); setCsvFileName(''); }} disabled={csvBusy}>プレビューを閉じる</button>
             </div>
           </div>

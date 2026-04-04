@@ -44,11 +44,14 @@ export type CsvImportError = {
   reasons: string[];
 };
 
+export type CsvImportAction = 'create' | 'update';
+
 export type CsvImportPreviewRow = {
   lineNumber: number;
+  id: string;
   name: string;
   address: string;
-  status: 'ready' | 'error';
+  status: CsvImportAction | 'error';
   reasons: string[];
 };
 
@@ -56,6 +59,7 @@ export type CsvImportPreparedRow = {
   lineNumber: number;
   raw: Record<string, string>;
   draft: ShopDraft;
+  action: CsvImportAction;
 };
 
 export type CsvImportPreview = {
@@ -64,9 +68,10 @@ export type CsvImportPreview = {
   validRows: CsvImportPreparedRow[];
   errors: CsvImportError[];
   totalRows: number;
-  readyCount: number;
+  createCount: number;
+  updateCount: number;
   errorCount: number;
 };
 
-export const CSV_HEADERS = ['name','tag','address','station','hours','holiday','seats','parking','official_url','lat','lng','image','memo','origin','genealogy'] as const;
+export const CSV_HEADERS = ['id','name','tag','address','station','hours','holiday','seats','parking','official_url','lat','lng','image','memo','origin','genealogy'] as const;
 export type CsvHeader = typeof CSV_HEADERS[number];

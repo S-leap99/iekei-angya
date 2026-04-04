@@ -1,7 +1,7 @@
 import { defaultShops } from './shopSeeds';
 import { noPhotoDataUrl } from './placeholders';
 import { hasSupabaseEnv, supabase } from './supabase';
-import type { CsvImportError, CsvImportPreparedRow, CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag } from './types';
+import type { CsvImportAction, CsvImportError, CsvImportPreparedRow, CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag } from './types';
 import { CSV_HEADERS } from './types';
 
 const STORAGE_KEY = 'iekei-local-shops';
@@ -333,8 +333,9 @@ function parseParking(value: string) {
   throw new Error('parking は TRUE または FALSE を入れてください。');
 }
 
-function buildCsvDraft(raw: Record<string, string>): ShopDraft {
+function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, existingShop?: Shop): ShopDraft {
   return {
+    id: action === 'update' ? raw.id.trim() : undefined,
     name: raw.name.trim(),
     origin: (raw.origin || '').trim() || '源流未設定',
     genealogy: (raw.genealogy || '').trim(),
@@ -348,8 +349,9 @@ function buildCsvDraft(raw: Record<string, string>): ShopDraft {
     officialUrl: (raw.official_url || '').trim(),
     lat: Number(raw.lat),
     lng: Number(raw.lng),
-    image: '',
+    image: existingShop?.image || '',
     memo: (raw.memo || '').trim(),
+    updatedAt: existingShop?.updatedAt,
   };
 }
 
@@ -368,8 +370,10 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
   }
 
   const existingShops = await listShops();
-  const existingKeys = new Set(existingShops.map((shop) => `${shop.name.trim()}__${shop.address.trim()}`));
-  const fileSeenKeys = new Set<string>();
+  const existingById = new Map(existingShops.map((shop) => [shop.id, shop]));
+  const existingKeysByOtherShop = new Map(existingShops.map((shop) => [`${shop.name.trim()}__${shop.address.trim()}`, shop.id]));
+  const fileSeenIds = new Set<string>();
+  const fileSeenKeys = new Map<string, string>();
   const previewRows = [] as CsvImportPreview['previewRows'];
   const errors: CsvImportError[] = [];
   const validRows: CsvImportPreparedRow[] = [];
@@ -380,11 +384,23 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
     while (padded.length < expectedHeader.length) padded.push('');
     const raw = Object.fromEntries(expectedHeader.map((header, index) => [header, String(padded[index] ?? '')])) as Record<string, string>;
     const reasons: string[] = [];
+    const normalizedId = raw.id.trim();
+    const existingShop = normalizedId ? existingById.get(normalizedId) : undefined;
+    const action: CsvImportAction = normalizedId ? 'update' : 'create';
 
     const requiredFields: Array<keyof typeof raw> = ['name', 'tag', 'address', 'hours', 'holiday', 'lat', 'lng'];
     requiredFields.forEach((field) => {
       if (!raw[field]?.trim()) reasons.push(`${field} は必須です。`);
     });
+
+    if (normalizedId && !existingShop) {
+      reasons.push('id に一致する店舗が見つかりません。既存店舗を更新する場合は正しい id を指定してください。');
+    }
+
+    if (normalizedId) {
+      if (fileSeenIds.has(normalizedId)) reasons.push('同じCSV内で id が重複しています。');
+      else fileSeenIds.add(normalizedId);
+    }
 
     if (raw.tag?.trim() && !VALID_TAGS.includes(raw.tag.trim() as Tag)) {
       reasons.push('tag は 直系 / 独立系 / 資本系 のどれかを入れてください。');
@@ -409,26 +425,37 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
 
     const duplicateKey = `${raw.name.trim()}__${raw.address.trim()}`;
     if (raw.name.trim() && raw.address.trim()) {
-      if (existingKeys.has(duplicateKey)) {
-        reasons.push('name と address が同じ店舗がすでに登録されています。CSV取込は新規追加のみです。');
-      } else if (fileSeenKeys.has(duplicateKey)) {
+      const existingShopId = existingKeysByOtherShop.get(duplicateKey);
+      if (action === 'create' && existingShopId) {
+        reasons.push('name と address が同じ店舗がすでに登録されています。更新したい場合は id を指定してください。');
+      }
+      if (action === 'update' && existingShopId && existingShopId !== normalizedId) {
+        reasons.push('別の店舗と同じ name と address になるため更新できません。');
+      }
+
+      const fileSeenKeyOwner = fileSeenKeys.get(duplicateKey);
+      const currentOwner = normalizedId || `line:${lineNumber}`;
+      if (fileSeenKeyOwner && fileSeenKeyOwner != currentOwner) {
         reasons.push('同じCSV内で name と address が重複しています。');
-      } else {
-        fileSeenKeys.add(duplicateKey);
+      } else if (!fileSeenKeyOwner) {
+        fileSeenKeys.set(duplicateKey, currentOwner);
       }
     }
 
     if (reasons.length) {
       const error = { lineNumber, shopName: raw.name.trim(), reasons };
       errors.push(error);
-      previewRows.push({ lineNumber, name: raw.name.trim() || '店舗名未入力', address: raw.address.trim(), status: 'error', reasons });
+      previewRows.push({ lineNumber, id: normalizedId, name: raw.name.trim() || '店舗名未入力', address: raw.address.trim(), status: 'error', reasons });
       return;
     }
 
-    const draft = buildCsvDraft(raw);
-    validRows.push({ lineNumber, raw, draft });
-    previewRows.push({ lineNumber, name: draft.name, address: draft.address, status: 'ready', reasons: [] });
+    const draft = buildCsvDraft(raw, action, existingShop);
+    validRows.push({ lineNumber, raw, draft, action });
+    previewRows.push({ lineNumber, id: normalizedId, name: draft.name, address: draft.address, status: action, reasons: [] });
   });
+
+  const createCount = validRows.filter((row) => row.action === 'create').length;
+  const updateCount = validRows.filter((row) => row.action === 'update').length;
 
   return {
     header: normalizedHeader,
@@ -436,37 +463,96 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
     validRows,
     errors,
     totalRows: bodyRows.length,
-    readyCount: validRows.length,
+    createCount,
+    updateCount,
     errorCount: errors.length,
   };
 }
 
-export async function executeCsvImport(validRows: CsvImportPreparedRow[]): Promise<{ importedCount: number; shops: Shop[] }> {
+export async function executeCsvImport(validRows: CsvImportPreparedRow[]): Promise<{ importedCount: number; createdCount: number; updatedCount: number; shops: Shop[] }> {
   if (!validRows.length) {
-    return { importedCount: 0, shops: [] };
+    return { importedCount: 0, createdCount: 0, updatedCount: 0, shops: [] };
   }
 
-  const imported = validRows.map(({ draft }) => cleanShop({ ...draft, images: [] }));
+  const createdRows = validRows.filter((row) => row.action === 'create');
+  const updatedRows = validRows.filter((row) => row.action === 'update');
 
   if (!hasSupabaseEnv || !supabase) {
     const current = readLocal();
-    const next = [...imported.map((shop) => ({ ...shop, images: [] })), ...current];
+    const currentById = new Map(current.map((shop) => [shop.id, shop]));
+    const createdShops: Shop[] = [];
+    const updatedShops: Shop[] = [];
+
+    const nextCurrent = current.map((shop) => {
+      const matched = updatedRows.find((row) => row.draft.id === shop.id);
+      if (!matched) return shop;
+      const merged = cleanShop({ ...shop, ...matched.draft, id: shop.id, images: shop.images ?? [], image: shop.image, updatedAt: todayString() });
+      updatedShops.push(merged);
+      currentById.set(merged.id, merged);
+      return merged;
+    });
+
+    createdRows.forEach(({ draft }) => {
+      const created = cleanShop({ ...draft, images: [], updatedAt: todayString() });
+      createdShops.push(created);
+      currentById.set(created.id, created);
+    });
+
+    const next = [...createdShops.map((shop) => ({ ...shop, images: [] })), ...nextCurrent];
     writeLocal(next);
-    return { importedCount: imported.length, shops: imported };
+    return {
+      importedCount: validRows.length,
+      createdCount: createdShops.length,
+      updatedCount: updatedShops.length,
+      shops: [...createdShops, ...updatedShops],
+    };
   }
 
-  const payload = imported.map(toDbShopInsertPayload);
-  const { data, error } = await supabase.from(TABLE_NAME).insert(payload).select('*');
-  if (error) {
-    const message = error.message?.trim() || '';
-    if (message) {
-      throw new Error(`CSV取込に失敗しました。${message}`);
+  const savedShops: Shop[] = [];
+
+  if (createdRows.length) {
+    const createPayload = createdRows.map(({ draft }) => cleanShop({ ...draft, images: [] })).map(toDbShopInsertPayload);
+    const { data, error } = await supabase.from(TABLE_NAME).insert(createPayload).select('*');
+    if (error) {
+      const message = error.message?.trim() || '';
+      throw new Error(message ? `CSV取込に失敗しました。${message}` : 'CSV取込に失敗しました。DBへ保存する時にエラーが発生しました。');
     }
-    throw new Error('CSV取込に失敗しました。DBへ保存する時にエラーが発生しました。');
+    savedShops.push(...((data ?? []) as Record<string, unknown>[]).map((row) => mapDbShop(row, [])));
   }
-  const savedRows = (data ?? []) as Record<string, unknown>[];
-  const savedShops = savedRows.map((row) => mapDbShop(row, []));
-  return { importedCount: savedShops.length, shops: savedShops };
+
+  for (const row of updatedRows) {
+    const shopId = row.draft.id?.trim();
+    if (!shopId) continue;
+
+    const existing = await getShop(shopId);
+    if (!existing) {
+      throw new Error(`CSV取込に失敗しました。id ${shopId} の店舗が見つかりません。`);
+    }
+
+    const mergedShop = cleanShop({
+      ...existing,
+      ...row.draft,
+      id: existing.id,
+      image: existing.image,
+      images: existing.images,
+      updatedAt: todayString(),
+    });
+
+    const payload = toDbShop(mergedShop);
+    const { error } = await supabase.from(TABLE_NAME).update(payload).eq('id', existing.id);
+    if (error) {
+      const message = error.message?.trim() || '';
+      throw new Error(message ? `CSV取込に失敗しました。${message}` : 'CSV取込に失敗しました。DBへ保存する時にエラーが発生しました。');
+    }
+    savedShops.push(await getShop(existing.id).then((item) => item ?? mergedShop));
+  }
+
+  return {
+    importedCount: validRows.length,
+    createdCount: createdRows.length,
+    updatedCount: updatedRows.length,
+    shops: savedShops,
+  };
 }
 
 export async function compressImageFile(file: File): Promise<File> {
