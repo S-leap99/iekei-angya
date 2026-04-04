@@ -10,7 +10,7 @@ import { deleteShopImage, executeCsvImport, getConnectionLabel, getImageBucketNa
 import { getAdminAuthState, signInAdmin, signOutAdmin } from './lib/authService';
 import type { CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag } from './lib/types';
 
-const originOptions = ['吉村家系', '本牧家系', '杉田家系'];
+const originOptions = ['吉村家系', '本牧家系', '六角家系'];
 const tags: Tag[] = ['直系', '独立系', '資本系'];
 const defaultCenter: [number, number] = [35.681236, 139.767125];
 const imageTypeLabels: Record<ShopImageType, string> = { slot1: '1', slot2: '2', slot3: '3' };
