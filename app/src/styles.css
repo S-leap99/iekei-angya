@@ -418,6 +418,29 @@ button { border: 0; cursor: pointer; }
 }
 
 .map-back-button,
+
+.map-search-input-wrap {
+  position: relative;
+}
+.map-search-input-wrap input {
+  padding-right: 42px;
+}
+.map-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  transform: translateY(-50%);
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.08);
+  color: #555;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
 .map-search-submit {
   min-height: 44px;
   border-radius: 14px;

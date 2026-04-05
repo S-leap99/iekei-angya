@@ -538,6 +538,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         value={searchText}
         onValueChange={setSearchText}
         onBack={() => navigate(backTarget, backState ? { state: backState } : undefined)}
+        onClear={() => setSearchText('')}
         expanded={expanded}
         onToggleExpanded={() => setExpanded((current) => !current)}
         onCollapse={() => setExpanded(false)}
@@ -584,6 +585,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
 function MapSearchHeader({
   value,
   onValueChange,
+  onClear,
   onBack,
   expanded,
   onToggleExpanded,
@@ -596,6 +598,7 @@ function MapSearchHeader({
 }: {
   value: string;
   onValueChange: (value: string) => void;
+  onClear: () => void;
   onBack: () => void;
   expanded: boolean;
   onToggleExpanded: () => void;
@@ -619,6 +622,19 @@ function MapSearchHeader({
             onFocus={() => { if (!expanded) onToggleExpanded(); }}
             placeholder="店名 / 住所 / 最寄り駅 / 地点名"
           />
+          {value ? (
+            <button
+              type="button"
+              className="map-search-clear"
+              aria-label="検索バーをクリア"
+              onClick={(event) => {
+                event.stopPropagation();
+                onClear();
+              }}
+            >
+              ×
+            </button>
+          ) : null}
         </div>
         <button type="submit" className="map-search-submit" disabled={searching}>{searching ? '検索中...' : '検索'}</button>
         {expanded ? (
@@ -716,6 +732,11 @@ const currentLocationIcon = L.divIcon({
 
 function MapViewportController({ center, targetZoom, shops, fitToShops, selectedShop }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; selectedShop: Shop | null }) {
   const map = useMap();
+  const initializedRef = useRef(false);
+  const prevCenterRef = useRef<string>('');
+  const prevZoomRef = useRef<number | null>(null);
+  const prevFitToShopsRef = useRef<boolean>(fitToShops);
+  const prevShopIdsRef = useRef<string>('');
 
   useEffect(() => {
     if (selectedShop) {
@@ -739,12 +760,36 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, selected
       map.setView(desiredCenter, nextZoom, { animate: true });
       return;
     }
+
+    const centerKey = `${center[0].toFixed(6)},${center[1].toFixed(6)}`;
+    const zoomValue = targetZoom ?? map.getZoom();
+    const shopIdsKey = shops.map((shop) => shop.id).join(',');
+
     if (fitToShops && shops.length) {
-      const bounds = L.latLngBounds(shops.map((shop) => [shop.lat, shop.lng] as [number, number]));
-      map.fitBounds(bounds, { padding: [36, 36], animate: true, maxZoom: shops.length === 1 ? 15 : 13 });
+      const shouldRefit = !initializedRef.current || !prevFitToShopsRef.current || prevShopIdsRef.current !== shopIdsKey;
+      prevFitToShopsRef.current = true;
+      prevShopIdsRef.current = shopIdsKey;
+      prevCenterRef.current = centerKey;
+      prevZoomRef.current = zoomValue;
+      initializedRef.current = true;
+
+      if (shouldRefit) {
+        const bounds = L.latLngBounds(shops.map((shop) => [shop.lat, shop.lng] as [number, number]));
+        map.fitBounds(bounds, { padding: [36, 36], animate: true, maxZoom: shops.length === 1 ? 15 : 13 });
+      }
       return;
     }
-    map.setView(center, targetZoom ?? map.getZoom(), { animate: true });
+
+    const shouldMove = !initializedRef.current || prevCenterRef.current !== centerKey || prevZoomRef.current !== zoomValue || prevFitToShopsRef.current !== fitToShops;
+    prevFitToShopsRef.current = fitToShops;
+    prevShopIdsRef.current = shopIdsKey;
+    prevCenterRef.current = centerKey;
+    prevZoomRef.current = zoomValue;
+    initializedRef.current = true;
+
+    if (shouldMove) {
+      map.setView(center, zoomValue, { animate: true });
+    }
   }, [center, fitToShops, map, selectedShop, shops, targetZoom]);
   return null;
 }
