@@ -72,6 +72,7 @@ function cleanShop(raw: Partial<ShopDraft> & { id?: string; updatedAt?: string; 
     seats: raw.seats?.trim() || '',
     parking: Boolean(raw.parking),
     officialUrl: raw.officialUrl?.trim() || '',
+    officialAccount: raw.officialAccount?.trim() || '',
     lat: Number(raw.lat ?? 35.681236),
     lng: Number(raw.lng ?? 139.767125),
     image: getPrimaryImageUrl(images),
@@ -129,6 +130,7 @@ function mapDbShop(row: Record<string, unknown>, images: ShopImage[]): Shop {
     seats: String(row.seats ?? ''),
     parking: Boolean(row.parking),
     officialUrl: String(row.official_url ?? ''),
+    officialAccount: String(row.official_account ?? ''),
     lat: Number(row.lat ?? 35.681236),
     lng: Number(row.lng ?? 139.767125),
     image: String(row.image ?? ''),
@@ -153,6 +155,7 @@ function toDbShop(shop: Shop) {
     seats: shop.seats,
     parking: shop.parking,
     official_url: shop.officialUrl,
+    official_account: shop.officialAccount,
     lat: shop.lat,
     lng: shop.lng,
     image: shop.image,
@@ -175,10 +178,12 @@ function toDbShopInsertPayload(shop: Shop) {
     seats: shop.seats,
     parking: shop.parking,
     official_url: shop.officialUrl,
+    official_account: shop.officialAccount,
     lat: shop.lat,
     lng: shop.lng,
     image: shop.image,
     memo: shop.memo,
+    updated_at: shop.updatedAt,
   };
 }
 
@@ -352,11 +357,12 @@ function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, exi
     seats: (raw.seats || '').trim(),
     parking: parseParking(raw.parking || ''),
     officialUrl: (raw.official_url || '').trim(),
+    officialAccount: (raw.official_account || '').trim(),
     lat: Number(raw.lat),
     lng: Number(raw.lng),
     image: existingShop?.image || '',
     memo: (raw.memo || '').trim(),
-    updatedAt: existingShop?.updatedAt,
+    updatedAt: (raw.updated_at || '').trim() || existingShop?.updatedAt,
   };
 }
 
@@ -426,6 +432,10 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
 
     if (raw.official_url?.trim() && !validateUrl(raw.official_url.trim())) {
       reasons.push('official_url は http:// または https:// で始まるURLを入れてください。');
+    }
+
+    if (raw.official_account?.trim() && !validateUrl(raw.official_account.trim())) {
+      reasons.push('official_account は http:// または https:// で始まるURLを入れてください。');
     }
 
     const duplicateKey = `${raw.name.trim()}__${raw.address.trim()}`;
