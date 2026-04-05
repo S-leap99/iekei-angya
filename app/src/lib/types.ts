@@ -22,6 +22,7 @@ export type Shop = {
   station: string;
   hours: string;
   holiday: string;
+  phone: string;
   seats: string;
   parking: boolean;
   officialUrl: string;
@@ -73,5 +74,5 @@ export type CsvImportPreview = {
   errorCount: number;
 };
 
-export const CSV_HEADERS = ['id','name','tag','address','station','hours','holiday','seats','parking','official_url','lat','lng','image','memo','origin','genealogy'] as const;
+export const CSV_HEADERS = ['id','name','tag','address','station','hours','holiday','phone','seats','parking','official_url','lat','lng','image','memo','origin','genealogy'] as const;
 export type CsvHeader = typeof CSV_HEADERS[number];

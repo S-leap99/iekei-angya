@@ -656,3 +656,10 @@ button { border: 0; cursor: pointer; }
 .leaflet-control-attribution {
   margin-bottom: env(safe-area-inset-bottom, 0px);
 }
+
+
+.detail-link {
+  color: #C40018;
+  text-decoration: underline;
+  word-break: break-all;
+}

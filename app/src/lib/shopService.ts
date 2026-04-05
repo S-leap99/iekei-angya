@@ -68,6 +68,7 @@ function cleanShop(raw: Partial<ShopDraft> & { id?: string; updatedAt?: string; 
     station: raw.station?.trim() || '',
     hours: String(raw.hours ?? '').replace(/\r\n/g, '\n').trim(),
     holiday: raw.holiday?.trim() || '',
+    phone: raw.phone?.trim() || '',
     seats: raw.seats?.trim() || '',
     parking: Boolean(raw.parking),
     officialUrl: raw.officialUrl?.trim() || '',
@@ -89,7 +90,7 @@ function readLocal(): Shop[] {
 
   try {
     const parsed = JSON.parse(text) as Shop[];
-    return parsed.length ? parsed : defaultShops;
+    return parsed.length ? parsed.map((shop) => cleanShop(shop)) : defaultShops;
   } catch {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultShops));
     return defaultShops;
@@ -124,6 +125,7 @@ function mapDbShop(row: Record<string, unknown>, images: ShopImage[]): Shop {
     station: String(row.station ?? ''),
     hours: String(row.hours ?? ''),
     holiday: String(row.holiday ?? ''),
+    phone: String(row.phone ?? ''),
     seats: String(row.seats ?? ''),
     parking: Boolean(row.parking),
     officialUrl: String(row.official_url ?? ''),
@@ -147,6 +149,7 @@ function toDbShop(shop: Shop) {
     station: shop.station,
     hours: shop.hours,
     holiday: shop.holiday,
+    phone: shop.phone,
     seats: shop.seats,
     parking: shop.parking,
     official_url: shop.officialUrl,
@@ -168,6 +171,7 @@ function toDbShopInsertPayload(shop: Shop) {
     station: shop.station,
     hours: shop.hours,
     holiday: shop.holiday,
+    phone: shop.phone,
     seats: shop.seats,
     parking: shop.parking,
     official_url: shop.officialUrl,
@@ -344,6 +348,7 @@ function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, exi
     station: (raw.station || '').trim(),
     hours: (raw.hours || '').replace(/\r\n/g, '\n').trim(),
     holiday: (raw.holiday || '').trim(),
+    phone: (raw.phone || '').trim(),
     seats: (raw.seats || '').trim(),
     parking: parseParking(raw.parking || ''),
     officialUrl: (raw.official_url || '').trim(),

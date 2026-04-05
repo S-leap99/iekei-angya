@@ -170,6 +170,24 @@ function formatHoursInline(hours: string) {
   return hours.replace(/\n+/g, ' / ').trim();
 }
 
+function buildTelHref(phone: string) {
+  const sanitized = phone.replace(/[^\d+]/g, '');
+  if (!sanitized) return '';
+  return `tel:${sanitized}`;
+}
+
+function renderOfficialUrl(url: string) {
+  if (!url) return '未設定';
+  return <a href={url} target="_blank" rel="noreferrer" className="detail-link">{url}</a>;
+}
+
+function renderPhoneLink(phone: string) {
+  if (!phone) return '未設定';
+  const telHref = buildTelHref(phone);
+  if (!telHref) return phone;
+  return <a href={telHref} className="detail-link">{phone}</a>;
+}
+
 function createShopMarkerIcon(selected: boolean) {
   return L.divIcon({
     className: 'custom-marker-wrapper',
@@ -833,9 +851,10 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
         <DetailItem label="最寄駅" value={shop.station} />
         <DetailItem label="営業時間" value={shop.hours || '未設定'} multiline />
         <DetailItem label="定休日" value={shop.holiday || '未設定'} />
+        <DetailItem label="電話番号" value={renderPhoneLink(shop.phone)} />
         <DetailItem label="席数" value={shop.seats || '未設定'} />
         <DetailItem label="駐車場" value={shop.parking ? 'あり' : 'なし'} />
-        <DetailItem label="公式URL" value={shop.officialUrl || '未設定'} multiline />
+        <DetailItem label="公式URL" value={renderOfficialUrl(shop.officialUrl)} multiline />
       </section>
       <div className="action-row section compact">
         <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo } }}>{'地図で見る'}</Link>
@@ -1017,7 +1036,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
       <section className="section compact csv-panel">
         <div className="section-head"><h2>CSV一括インポート</h2><span>追加・更新対応</span></div>
         <p>{csvStatus}</p>
-        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,seats,parking,official_url,lat,lng,image,memo,origin,genealogy の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。画像ファイルはCSVでは取り込みません。</p>
+        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,lat,lng,image,memo,origin,genealogy の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。画像ファイルはCSVでは取り込みません。</p>
         <input type="file" accept=".csv" onChange={handleCsvSelect} disabled={csvBusy} />
         {csvFileName ? <p className="csv-help">選択中: {csvFileName}</p> : null}
         {csvPreview ? (
@@ -1157,6 +1176,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
 11:00-15:00
 17:00-22:00" /></label>
         <label>定休日<input value={form.holiday} onChange={(e) => handleChange('holiday', e.target.value)} /></label>
+        <label>電話番号<input value={form.phone} onChange={(e) => handleChange('phone', e.target.value)} placeholder="例: 045-123-4567" inputMode="tel" /></label>
         <label>席数<input value={form.seats} onChange={(e) => handleChange('seats', e.target.value)} /></label>
         <label>駐車場<select value={form.parking ? 'あり' : 'なし'} onChange={(e) => handleChange('parking', e.target.value === 'あり')}><option>あり</option><option>なし</option></select></label>
         <label>公式URL<input value={form.officialUrl} onChange={(e) => handleChange('officialUrl', e.target.value)} /></label>
@@ -1204,6 +1224,7 @@ function buildDraft(shop: Shop | null): ShopDraft {
     station: shop?.station ?? '',
     hours: shop?.hours ?? '',
     holiday: shop?.holiday ?? '',
+    phone: shop?.phone ?? '',
     seats: shop?.seats ?? '',
     parking: shop?.parking ?? false,
     officialUrl: shop?.officialUrl ?? '',
@@ -1237,7 +1258,7 @@ function TagChip({ tag }: { tag: Tag }) {
   return <span className={`tag-chip tag-${tag}`}>{tag}</span>;
 }
 
-function DetailItem({ label, value, multiline = false }: { label: string; value: string; multiline?: boolean }) {
+function DetailItem({ label, value, multiline = false }: { label: string; value: ReactNode; multiline?: boolean }) {
   return (
     <article className="detail-item">
       <span>{label}</span>
