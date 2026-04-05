@@ -1037,7 +1037,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
       <section className="section compact csv-panel">
         <div className="section-head"><h2>CSV一括インポート</h2><span>追加・更新対応</span></div>
         <p>{csvStatus}</p>
-        <<p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,official_account,lat,lng,image,memo,updated_at,origin,genealogy の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。画像ファイルはCSVでは取り込みません。</p>
+        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,official_account,lat,lng,image,memo,updated_at,origin,genealogy の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。画像ファイルはCSVでは取り込みません。</p>
         <input type="file" accept=".csv" onChange={handleCsvSelect} disabled={csvBusy} />
         {csvFileName ? <p className="csv-help">選択中: {csvFileName}</p> : null}
         {csvPreview ? (
