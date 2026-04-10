@@ -481,6 +481,7 @@ export default function App() {
         <Route path="/shops/:shopId" element={<ShopDetailPage shops={shopState.shops} />} />
         <Route path="/areas" element={<Navigate to="/shops" replace />} />
         <Route path="/admin/login" element={<AdminLoginPage />} />
+        <Route path="/admin" element={<AdminRoute><Navigate to="/admin-8fj3k2-3me77nfcb6c0" replace /></AdminRoute>} />
         <Route path="/admin-8fj3k2-3me77nfcb6c0" element={<AdminRoute><AdminTopPage shops={shopState.shops} /></AdminRoute>} />
         <Route path="/admin/shops" element={<AdminRoute><AdminShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></AdminRoute>} />
         <Route path="/admin/shops/:shopId" element={<AdminRoute><AdminEditPage shops={shopState.shops} onSaved={shopState.refresh} /></AdminRoute>} />
@@ -673,6 +674,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [isOsmSearching, setIsOsmSearching] = useState(false);
   const lastOsmRequestAtRef = useRef(0);
   const mapViewRef = useRef<MapViewSnapshot>({ center: defaultCenter, zoom: 12 });
+  const preserveViewOnNextSyncRef = useRef(false);
 
   useEffect(() => {
     setEntrySource(initialEntrySource);
@@ -689,13 +691,23 @@ function MapPage({ shops }: { shops: Shop[] }) {
     if (ids.length) {
       setVisibleShops(shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)));
       setFitToShops(false);
+      preserveViewOnNextSyncRef.current = false;
     } else {
       const nextVisible = filterShops(shops, initialFilters);
       setVisibleShops(nextVisible);
-      setFitToShops(true);
+      const shouldPreserveView = preserveViewOnNextSyncRef.current;
+      if (shouldPreserveView) {
+        preserveViewOnNextSyncRef.current = false;
+      }
+      const shouldFitAll = shouldPreserveView
+        ? false
+        : (Boolean(initialFilters.q || initialFilters.origin || initialFilters.tag || initialFilters.parking !== null)
+          ? nextVisible.length > 0
+          : selectedShopId ? false : !hasMapSearched);
+      setFitToShops(shouldFitAll);
     }
     setSearchMessage('');
-  }, [ids, initialFilters, shops]);
+  }, [hasMapSearched, ids, initialFilters, selectedShopId, shops]);
 
   useEffect(() => {
     if (selectedShopId && !visibleShops.some((shop) => shop.id === selectedShopId)) {
@@ -792,6 +804,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const handleClearMapSearch = useCallback(() => {
     const clearedFilters = createEmptySearchFilters();
     const currentView = mapViewRef.current;
+    preserveViewOnNextSyncRef.current = true;
     setSearchText('');
     setDraftFilters(clearedFilters);
     setActiveFilters(clearedFilters);
@@ -1199,7 +1212,7 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
 function AdminLoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const from = (location.state as { from?: string } | null)?.from ?? '/admin';
+  const from = (location.state as { from?: string } | null)?.from ?? '/admin-8fj3k2-3me77nfcb6c0';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
