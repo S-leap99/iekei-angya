@@ -33,6 +33,8 @@ export type Shop = {
   images: ShopImage[];
   memo: string;
   updatedAt: string;
+  parentId: string | null;
+  nodoId: string;
 };
 
 export type ShopDraft = Omit<Shop, 'id' | 'updatedAt' | 'images'> & {
@@ -75,5 +77,5 @@ export type CsvImportPreview = {
   errorCount: number;
 };
 
-export const CSV_HEADERS = ['id','name','tag','address','station','hours','holiday','phone','seats','parking','official_url','official_account','lat','lng','image','memo','updated_at','origin','genealogy'] as const;
+export const CSV_HEADERS = ['id','name','tag','address','station','hours','holiday','phone','seats','parking','official_url','official_account','lat','lng','image','memo','updated_at','origin','genealogy','parent_id','nodo_id'] as const;
 export type CsvHeader = typeof CSV_HEADERS[number];

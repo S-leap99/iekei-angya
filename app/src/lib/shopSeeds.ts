@@ -22,7 +22,9 @@ export const defaultShops: Shop[] = [
     image: noPhotoDataUrl,
     images: [],
     memo: '昼営業が安定。写真追加候補あり。',
-    updatedAt: '2026-03-20'
+    updatedAt: '2026-03-20',
+    parentId: null,
+    nodoId: '1'
   },
   {
     id: '2',
@@ -44,7 +46,9 @@ export const defaultShops: Shop[] = [
     image: noPhotoDataUrl,
     images: [],
     memo: '終日混雑しやすい。',
-    updatedAt: '2026-03-19'
+    updatedAt: '2026-03-19',
+    parentId: '1',
+    nodoId: '2'
   },
   {
     id: '3',
@@ -66,6 +70,8 @@ export const defaultShops: Shop[] = [
     image: noPhotoDataUrl,
     images: [],
     memo: '駐車場3台。',
-    updatedAt: '2026-03-18'
+    updatedAt: '2026-03-18',
+    parentId: '2',
+    nodoId: '3'
   }
 ];

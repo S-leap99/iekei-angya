@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent, FormEvent, ReactNode } from 'react';
 import { MapContainer, Marker, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -16,7 +16,254 @@ const defaultCenter: [number, number] = [35.681236, 139.767125];
 const imageTypeLabels: Record<ShopImageType, string> = { slot1: '1', slot2: '2', slot3: '3' };
 const imageTypeOrder: ShopImageType[] = ['slot1', 'slot2', 'slot3'];
 
+type GenealogyNodeLink = {
+  kind: 'shop' | 'list';
+  to: string;
+};
+
+type GenealogyNodeAccent = 'origin' | 'direct' | 'independent' | 'capital';
+
+type GenealogyGraphNode = {
+  id: string;
+  nodoId: string;
+  name: string;
+  subtitle: string;
+  depth: number;
+  accent: GenealogyNodeAccent;
+  link: GenealogyNodeLink;
+  shopIds: string[];
+  shopCount: number;
+  tag: Tag;
+};
+
+type GenealogyGraphEdge = {
+  from: string;
+  to: string;
+};
+
+type GenealogyGraph = {
+  columns: GenealogyGraphNode[][];
+  edges: GenealogyGraphEdge[];
+  nodesById: Map<string, GenealogyGraphNode>;
+  parentsByNodeId: Map<string, string[]>;
+  childrenByNodeId: Map<string, string[]>;
+  roots: string[];
+};
+
+function getGenealogyAccent(tag: Tag): GenealogyNodeAccent {
+  if (tag === '直系') return 'direct';
+  if (tag === '資本系') return 'capital';
+  return 'independent';
+}
+
+function getCommonNodeName(shops: Shop[]) {
+  if (shops.length === 1) return shops[0].name;
+  const names = shops.map((shop) => shop.name.trim()).filter(Boolean);
+  if (!names.length) return '名称未設定';
+
+  let prefix = names[0];
+  for (const name of names.slice(1)) {
+    while (prefix && !name.startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+    }
+  }
+
+  const trimmed = prefix.replace(/[\s\-–ー・]+$/, '').trim();
+  if (trimmed.length >= 2) return trimmed;
+  return `${names[0]} ほか`;
+}
+
+
+function getTouchDistance(touches: { clientX: number; clientY: number }[]) {
+  if (touches.length < 2) return 0;
+  const [a, b] = touches;
+  return Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+const GENEALOGY_BASE_SCALE = 0.7;
+const GENEALOGY_MIN_ZOOM = 0.3;
+const GENEALOGY_MAX_ZOOM = 2.4;
+
+function buildGenealogyUrl({
+  tag,
+  query,
+  focusNodeId,
+  zoom,
+}: {
+  tag: Tag;
+  query?: string;
+  focusNodeId?: string | null;
+  zoom?: number;
+}) {
+  const params = new URLSearchParams();
+  params.set('tag', tag);
+  if (query?.trim()) params.set('q', query.trim());
+  if (focusNodeId) params.set('focus', focusNodeId);
+  if (zoom !== undefined) params.set('zoom', String(Number(zoom.toFixed(2))));
+  const queryString = params.toString();
+  return `/genealogy${queryString ? `?${queryString}` : ''}`;
+}
+
+function buildGenealogyGraph(shops: Shop[], activeTag: Tag): GenealogyGraph {
+  const tagShops = shops.filter((shop) => shop.tag === activeTag);
+  const nodesMap = new Map<string, GenealogyGraphNode>();
+  const shopToNodeId = new Map<string, string>();
+
+  const groups = new Map<string, Shop[]>();
+  tagShops.forEach((shop) => {
+    const nodeId = shop.nodoId || shop.id;
+    const list = groups.get(nodeId) ?? [];
+    list.push(shop);
+    groups.set(nodeId, list);
+    shopToNodeId.set(shop.id, nodeId);
+  });
+
+  groups.forEach((groupShops, nodeId) => {
+    const sorted = [...groupShops].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
+    const representative = sorted[0];
+    const isMulti = sorted.length > 1;
+    nodesMap.set(nodeId, {
+      id: nodeId,
+      nodoId: nodeId,
+      name: getCommonNodeName(sorted),
+      subtitle: isMulti ? `${sorted.length}店舗をまとめて表示` : '店舗詳細へ',
+      depth: 0,
+      accent: getGenealogyAccent(representative.tag),
+      link: isMulti
+        ? { kind: 'list', to: `/shops?nodoId=${encodeURIComponent(nodeId)}` }
+        : { kind: 'shop', to: `/shops/${representative.id}` },
+      shopIds: sorted.map((shop) => shop.id),
+      shopCount: sorted.length,
+      tag: representative.tag,
+    });
+  });
+
+  const incoming = new Map<string, Set<string>>();
+  const outgoing = new Map<string, Set<string>>();
+  const edgeKeys = new Set<string>();
+
+  const addEdge = (fromShopId: string | null, toShopId: string | null) => {
+    if (!fromShopId || !toShopId || fromShopId === toShopId) return;
+    const fromNodeId = shopToNodeId.get(fromShopId);
+    const toNodeId = shopToNodeId.get(toShopId);
+    if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+
+    const key = `${fromNodeId}->${toNodeId}`;
+    if (edgeKeys.has(key)) return;
+    edgeKeys.add(key);
+
+    const nextOutgoing = outgoing.get(fromNodeId) ?? new Set<string>();
+    nextOutgoing.add(toNodeId);
+    outgoing.set(fromNodeId, nextOutgoing);
+
+    const nextIncoming = incoming.get(toNodeId) ?? new Set<string>();
+    nextIncoming.add(fromNodeId);
+    incoming.set(toNodeId, nextIncoming);
+  };
+
+  tagShops.forEach((shop) => {
+    addEdge(shop.parentId, shop.id);
+  });
+
+  const nodeIds = [...nodesMap.keys()].sort((a, b) => {
+    const aName = nodesMap.get(a)?.name ?? '';
+    const bName = nodesMap.get(b)?.name ?? '';
+    return aName.localeCompare(bName, 'ja');
+  });
+
+  const roots = nodeIds.filter((nodeId) => (incoming.get(nodeId)?.size ?? 0) === 0);
+  const depthByNodeId = new Map<string, number>();
+  roots.forEach((nodeId) => depthByNodeId.set(nodeId, 0));
+
+  const traverseDepth = (nodeId: string, depth: number, trail: Set<string>) => {
+    const currentDepth = depthByNodeId.get(nodeId);
+    if (currentDepth === undefined || depth > currentDepth) {
+      depthByNodeId.set(nodeId, depth);
+    }
+
+    if (trail.has(nodeId)) return;
+    trail.add(nodeId);
+
+    const children = [...(outgoing.get(nodeId) ?? new Set<string>())].sort((a, b) => {
+      const aName = nodesMap.get(a)?.name ?? '';
+      const bName = nodesMap.get(b)?.name ?? '';
+      return aName.localeCompare(bName, 'ja');
+    });
+
+    children.forEach((childId) => traverseDepth(childId, depth + 1, new Set(trail)));
+  };
+
+  roots.forEach((rootId) => traverseDepth(rootId, 0, new Set()));
+
+  nodeIds.forEach((nodeId) => {
+    if (!depthByNodeId.has(nodeId)) {
+      depthByNodeId.set(nodeId, incoming.get(nodeId)?.size ? 1 : 0);
+    }
+  });
+
+  const parentsByNodeId = new Map<string, string[]>();
+  const childrenByNodeId = new Map<string, string[]>();
+
+  nodeIds.forEach((nodeId) => {
+    parentsByNodeId.set(nodeId, [...(incoming.get(nodeId) ?? new Set<string>())].sort((a, b) => {
+      const aName = nodesMap.get(a)?.name ?? '';
+      const bName = nodesMap.get(b)?.name ?? '';
+      return aName.localeCompare(bName, 'ja');
+    }));
+    childrenByNodeId.set(nodeId, [...(outgoing.get(nodeId) ?? new Set<string>())].sort((a, b) => {
+      const aName = nodesMap.get(a)?.name ?? '';
+      const bName = nodesMap.get(b)?.name ?? '';
+      return aName.localeCompare(bName, 'ja');
+    }));
+  });
+
+  const visited = new Set<string>();
+  const orderedNodeIds: string[] = [];
+
+  const visitForOrder = (nodeId: string) => {
+    if (visited.has(nodeId)) return;
+    visited.add(nodeId);
+    orderedNodeIds.push(nodeId);
+    (childrenByNodeId.get(nodeId) ?? []).forEach((childId) => visitForOrder(childId));
+  };
+
+  roots.forEach((rootId) => visitForOrder(rootId));
+  nodeIds.forEach((nodeId) => visitForOrder(nodeId));
+
+  const maxDepth = orderedNodeIds.reduce((max, nodeId) => Math.max(max, depthByNodeId.get(nodeId) ?? 0), 0);
+  const columns: GenealogyGraphNode[][] = Array.from({ length: maxDepth + 1 }, () => []);
+
+  orderedNodeIds
+    .map((nodeId) => {
+      const node = nodesMap.get(nodeId)!;
+      return { ...node, depth: depthByNodeId.get(nodeId) ?? 0 };
+    })
+    .forEach((node) => {
+      columns[node.depth] ??= [];
+      columns[node.depth].push(node);
+    });
+
+  const edges: GenealogyGraphEdge[] = [...edgeKeys].map((key) => {
+    const [from, to] = key.split('->');
+    return { from, to };
+  }).filter((edge) => {
+    const fromDepth = depthByNodeId.get(edge.from);
+    const toDepth = depthByNodeId.get(edge.to);
+    return fromDepth !== undefined && toDepth !== undefined && toDepth > fromDepth;
+  });
+
+  const nodesById = new Map<string, GenealogyGraphNode>();
+  columns.flat().forEach((node) => nodesById.set(node.id, node));
+
+  return { columns, edges, nodesById, parentsByNodeId, childrenByNodeId, roots };
+}
+
 function getShopImagesInDisplayOrder(images: ShopImage[]) {
+
   return [...images].sort((a, b) => imageTypeOrder.indexOf(a.imageType) - imageTypeOrder.indexOf(b.imageType));
 }
 
@@ -65,9 +312,11 @@ type SearchFilters = {
   origin: string;
   tag: Tag | '';
   parking: boolean | null;
+  nodoId: string;
 };
 
 type MapEntrySource = 'home' | 'searchResults' | 'detail';
+type MapViewSnapshot = { center: [number, number]; zoom: number };
 
 type OsmSearchResult = {
   name: string;
@@ -89,7 +338,8 @@ function filterShops(shops: Shop[], filters: SearchFilters) {
     const hitOrigin = !filters.origin || shop.origin === filters.origin;
     const hitTag = !filters.tag || shop.tag === filters.tag;
     const hitParking = filters.parking === null || shop.parking === filters.parking;
-    return hitKeyword && hitOrigin && hitTag && hitParking;
+    const hitNodo = !filters.nodoId || shop.nodoId === filters.nodoId;
+    return hitKeyword && hitOrigin && hitTag && hitParking && hitNodo;
   });
 }
 
@@ -101,6 +351,7 @@ function readSearchFilters(searchParams: URLSearchParams): SearchFilters {
     origin: searchParams.get('origin') ?? '',
     tag,
     parking: parkingParam === 'true' ? true : parkingParam === 'false' ? false : null,
+    nodoId: searchParams.get('nodoId') ?? '',
   };
 }
 
@@ -110,6 +361,7 @@ function buildSearchParams(filters: SearchFilters) {
   if (filters.origin) next.set('origin', filters.origin);
   if (filters.tag) next.set('tag', filters.tag);
   if (filters.parking !== null) next.set('parking', String(filters.parking));
+  if (filters.nodoId) next.set('nodoId', filters.nodoId);
   return next;
 }
 
@@ -118,6 +370,9 @@ function buildSearchUrl(filters: SearchFilters) {
   return `/shops${query ? `?${query}` : ''}`;
 }
 
+function createEmptySearchFilters(): SearchFilters {
+  return { q: '', origin: '', tag: '', parking: null, nodoId: '' };
+}
 
 function useClickOutside<T extends HTMLElement>(onOutsideClick: () => void, enabled = true) {
   const ref = useRef<T | null>(null);
@@ -207,6 +462,7 @@ export default function App() {
         <Route path="/" element={<HomePage shops={shopState.shops} />} />
         <Route path="/shops" element={<ShopSearchPage shops={shopState.shops} loading={shopState.loading} />} />
         <Route path="/map" element={<MapPage shops={shopState.shops} />} />
+        <Route path="/genealogy" element={<GenealogyPage shops={shopState.shops} loading={shopState.loading} />} />
         <Route path="/shops/:shopId" element={<ShopDetailPage shops={shopState.shops} />} />
         <Route path="/areas" element={<Navigate to="/shops" replace />} />
         <Route path="/admin/login" element={<AdminLoginPage />} />
@@ -287,8 +543,9 @@ function HomePage(_: { shops: Shop[] }) {
           />
           <button className="primary-button" onClick={() => navigate(`/shops?q=${encodeURIComponent(keyword)}`)}>検索</button>
           </div>
-          <div className="cta-grid single-grid home-cta-grid">
+          <div className="cta-grid home-cta-grid">
             <Link className="primary-button block" to="/map" state={{ autoLocate: true }}>近くで探す</Link>
+            <Link className="secondary-button home-secondary-button block" to="/genealogy">系譜図を見る</Link>
           </div>
         </div>
       </section>
@@ -298,6 +555,8 @@ function HomePage(_: { shops: Shop[] }) {
 }
 
 function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean }) {
+  const location = useLocation();
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
   const [searchParams, setSearchParams] = useSearchParams();
   const filters = readSearchFilters(searchParams);
   const [searchText, setSearchText] = useState(filters.q);
@@ -314,6 +573,7 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
       origin: nextValues.origin ?? filters.origin,
       tag: nextValues.tag ?? filters.tag,
       parking: nextValues.parking === undefined ? filters.parking : nextValues.parking,
+      nodoId: nextValues.nodoId ?? filters.nodoId,
     };
     setSearchParams(buildSearchParams(nextFilters), { replace: true });
   };
@@ -331,7 +591,7 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
 
   return (
     <main className="page">
-      <Header title="検索結果" backTo="/" />
+      <Header title="検索結果" backTo={locationState?.backTo ?? "/"} backState={locationState?.backState} />
       <section className="sticky-panel">
         <form onSubmit={handleSearchSubmit} className="search-box stacked-mobile">
           <input className="full-input" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="店名 / 住所 / 最寄り駅" />
@@ -380,7 +640,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const ids = useMemo(() => (searchParams.get('ids') ?? '').split(',').filter(Boolean), [searchParams]);
   const initialSelected = searchParams.get('selected') ?? '';
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; autoLocate?: boolean; entrySource?: MapEntrySource } | null) ?? null;
-  const initialEntrySource: MapEntrySource = locationState?.entrySource ?? (locationState?.backTo?.startsWith('/shops') ? 'searchResults' : 'home');
+  const initialEntrySource: MapEntrySource = locationState?.entrySource ?? 'home';
   const [entrySource, setEntrySource] = useState<MapEntrySource>(initialEntrySource);
   const [hasMapSearched, setHasMapSearched] = useState(false);
   const [selectedShopId, setSelectedShopId] = useState(initialSelected);
@@ -392,10 +652,12 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
   const [mapZoom, setMapZoom] = useState(12);
   const [fitToShops, setFitToShops] = useState<boolean>(() => !ids.length);
+  const [fitRequestKey, setFitRequestKey] = useState(0);
   const [userPosition, setUserPosition] = useState<[number, number] | null>(null);
   const [searchMessage, setSearchMessage] = useState('');
   const [isOsmSearching, setIsOsmSearching] = useState(false);
   const lastOsmRequestAtRef = useRef(0);
+  const mapViewRef = useRef<MapViewSnapshot>({ center: defaultCenter, zoom: 12 });
 
   useEffect(() => {
     setEntrySource(initialEntrySource);
@@ -442,8 +704,19 @@ function MapPage({ shops }: { shops: Shop[] }) {
     return `/map${query ? `?${query}` : ''}`;
   }, [activeFilters, hasMapSearched, searchParams, selectedShopId]);
 
-  const backTarget = hasMapSearched ? '/' : (entrySource === 'searchResults' ? (locationState?.backTo ?? buildSearchUrl(activeFilters)) : '/');
-  const backState = hasMapSearched ? undefined : locationState?.backState;
+  const mapReturnUrl = useMemo(() => {
+    const params = hasMapSearched ? buildSearchParams(activeFilters) : new URLSearchParams(searchParams);
+    params.delete('selected');
+    const query = params.toString();
+    return `/map${query ? `?${query}` : ''}`;
+  }, [activeFilters, hasMapSearched, searchParams]);
+
+  const backTarget = entrySource === 'detail'
+    ? (locationState?.backTo ?? '/')
+    : entrySource === 'searchResults'
+      ? (locationState?.backTo ?? buildSearchUrl(activeFilters))
+      : '/';
+  const backState = locationState?.backState;
 
   const handleCurrentLocation = useCallback(() => {
     if (!navigator.geolocation) {
@@ -491,9 +764,32 @@ function MapPage({ shops }: { shops: Shop[] }) {
     };
   }, []);
 
+  const hasActiveMapFilter = Boolean(activeFilters.q.trim() || activeFilters.origin.trim() || activeFilters.tag || activeFilters.parking !== null || ids.length);
+
   const handleCloseCard = () => {
     setSelectedShopId('');
+    if (hasActiveMapFilter) {
+      setFitToShops(true);
+      setFitRequestKey((current) => current + 1);
+    }
   };
+
+  const handleClearMapSearch = useCallback(() => {
+    const clearedFilters = createEmptySearchFilters();
+    const currentView = mapViewRef.current;
+    setSearchText('');
+    setDraftFilters(clearedFilters);
+    setActiveFilters(clearedFilters);
+    setHasMapSearched(false);
+    setSelectedShopId('');
+    setVisibleShops(shops);
+    setFitToShops(false);
+    setUserPosition(null);
+    setSearchMessage('');
+    setMapCenter(currentView.center);
+    setMapZoom(currentView.zoom);
+    setSearchParams(new URLSearchParams(), { replace: true });
+  }, [setSearchParams, shops]);
 
   const applyMapSearch = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -501,7 +797,6 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setDraftFilters(nextFilters);
     setActiveFilters(nextFilters);
     setHasMapSearched(true);
-    setEntrySource('home');
     setSelectedShopId('');
     setSearchMessage('');
     setUserPosition(null);
@@ -556,7 +851,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         value={searchText}
         onValueChange={setSearchText}
         onBack={() => navigate(backTarget, backState ? { state: backState } : undefined)}
-        onClear={() => setSearchText('')}
+        onClear={handleClearMapSearch}
         expanded={expanded}
         onToggleExpanded={() => setExpanded((current) => !current)}
         onCollapse={() => setExpanded(false)}
@@ -570,7 +865,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         <div className="map-canvas full-bleed-map with-overlay-card has-map-search-ui">
           <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} selectedShop={selectedShop} />
+            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} selectedShop={selectedShop} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
@@ -590,7 +885,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
           {selectedShop ? (
             <div className="map-overlay-card">
               <button type="button" className="map-card-close-button" aria-label="店舗カードを閉じる" onClick={handleCloseCard}>×</button>
-              <ShopCard shop={selectedShop} compact backTo={currentMapUrl} backState={{ backTo: backTarget, backState, entrySource: hasMapSearched ? 'home' : entrySource }} />
+              <ShopCard shop={selectedShop} compact backTo={currentMapUrl} backState={{ backTo: backTarget, backState, entrySource }} />
             </div>
           ) : null}
         </div>
@@ -748,13 +1043,30 @@ const currentLocationIcon = L.divIcon({
   iconAnchor: [9, 9]
 });
 
-function MapViewportController({ center, targetZoom, shops, fitToShops, selectedShop }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; selectedShop: Shop | null }) {
+function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, selectedShop, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; selectedShop: Shop | null; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
   const map = useMap();
   const initializedRef = useRef(false);
   const prevCenterRef = useRef<string>('');
   const prevZoomRef = useRef<number | null>(null);
   const prevFitToShopsRef = useRef<boolean>(fitToShops);
   const prevShopIdsRef = useRef<string>('');
+  const prevFitRequestKeyRef = useRef<number>(fitRequestKey);
+
+  useEffect(() => {
+    const syncSnapshot = () => {
+      const currentCenter = map.getCenter();
+      onViewChange?.({ center: [currentCenter.lat, currentCenter.lng], zoom: map.getZoom() });
+    };
+
+    syncSnapshot();
+    map.on('moveend', syncSnapshot);
+    map.on('zoomend', syncSnapshot);
+
+    return () => {
+      map.off('moveend', syncSnapshot);
+      map.off('zoomend', syncSnapshot);
+    };
+  }, [map, onViewChange]);
 
   useEffect(() => {
     if (selectedShop) {
@@ -784,11 +1096,12 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, selected
     const shopIdsKey = shops.map((shop) => shop.id).join(',');
 
     if (fitToShops && shops.length) {
-      const shouldRefit = !initializedRef.current || !prevFitToShopsRef.current || prevShopIdsRef.current !== shopIdsKey;
+      const shouldRefit = !initializedRef.current || !prevFitToShopsRef.current || prevShopIdsRef.current !== shopIdsKey || prevFitRequestKeyRef.current !== fitRequestKey;
       prevFitToShopsRef.current = true;
       prevShopIdsRef.current = shopIdsKey;
       prevCenterRef.current = centerKey;
       prevZoomRef.current = zoomValue;
+      prevFitRequestKeyRef.current = fitRequestKey;
       initializedRef.current = true;
 
       if (shouldRefit) {
@@ -803,12 +1116,13 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, selected
     prevShopIdsRef.current = shopIdsKey;
     prevCenterRef.current = centerKey;
     prevZoomRef.current = zoomValue;
+    prevFitRequestKeyRef.current = fitRequestKey;
     initializedRef.current = true;
 
     if (shouldMove) {
       map.setView(center, zoomValue, { animate: true });
     }
-  }, [center, fitToShops, map, selectedShop, shops, targetZoom]);
+  }, [center, fitRequestKey, fitToShops, map, selectedShop, shops, targetZoom]);
   return null;
 }
 
@@ -820,6 +1134,7 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
   const backTo = locationState?.backTo ?? '/shops';
   const mapLink = shop ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}` : '/map';
   const detailUrl = shop ? `/shops/${shop.id}` : '/shops';
+  const genealogyLink = shop ? buildGenealogyUrl({ tag: shop.tag, focusNodeId: shop.nodoId || shop.id, zoom: 1 }) : '/genealogy';
   if (!shop) return <main className="page"><Header title="店舗詳細" backTo={backTo} /><p>店舗が見つかりませんでした。</p></main>;
   return (
     <main className="page detail-page">
@@ -858,7 +1173,8 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
         <DetailItem label="公式SNS" value={renderExternalLink(shop.officialAccount)} multiline />
       </section>
       <div className="action-row section compact">
-        <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo } }}>{'地図で見る'}</Link>
+        <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo }, entrySource: 'detail' as MapEntrySource }}>{'地図で見る'}</Link>
+        <Link className="secondary-button block" to={genealogyLink} state={{ backTo: detailUrl, backState: { backTo }, focusNodeId: shop.nodoId || shop.id }}>系譜図を見る</Link>
       </div>
       <BottomNav />
     </main>
@@ -1037,7 +1353,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
       <section className="section compact csv-panel">
         <div className="section-head"><h2>CSV一括インポート</h2><span>追加・更新対応</span></div>
         <p>{csvStatus}</p>
-        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,official_account,lat,lng,image,memo,updated_at,origin,genealogy の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。画像ファイルはCSVでは取り込みません。</p>
+        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,official_account,lat,lng,image,memo,updated_at,origin,genealogy,parent_id,nodo_id の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。parent_id / nodo_id もCSVで追加・更新できます。画像ファイルはCSVでは取り込みません。</p>
         <input type="file" accept=".csv" onChange={handleCsvSelect} disabled={csvBusy} />
         {csvFileName ? <p className="csv-help">選択中: {csvFileName}</p> : null}
         {csvPreview ? (
@@ -1073,6 +1389,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
             <div>
               <strong>{shop.name}</strong>
               <p>{shop.origin} / {shop.updatedAt}</p>
+              <p className="csv-help">parent: {shop.parentId || '未設定'} / nodo: {shop.nodoId || '未設定'}</p>
             </div>
             <div className="row-actions">
               <Link className="secondary-button small admin-secondary" to={`/shops/${shop.id}`}>公開画面</Link>
@@ -1104,7 +1421,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
     setImageMessage('');
   }, [shop?.id]);
 
-  const handleChange = (key: keyof ShopDraft, value: string | boolean | number) => {
+  const handleChange = (key: keyof ShopDraft, value: string | boolean | number | null) => {
     setForm((current) => ({ ...current, [key]: value }));
   };
 
@@ -1184,6 +1501,8 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
         <label>公式SNS<input value={form.officialAccount} onChange={(e) => handleChange('officialAccount', e.target.value)} placeholder="例: https://instagram.com/xxxx または https://x.com/xxxx" /></label>
         <label>緯度<input value={String(form.lat)} onChange={(e) => handleChange('lat', Number(e.target.value))} /></label>
         <label>経度<input value={String(form.lng)} onChange={(e) => handleChange('lng', Number(e.target.value))} /></label>
+        <label>親店舗ID（parent_id）<input value={form.parentId ?? ''} onChange={(e) => handleChange('parentId', e.target.value || null)} placeholder="親ノードにしたい店舗の id" /></label>
+        <label>ノードID（nodo_id）<input value={form.nodoId ?? ''} onChange={(e) => handleChange('nodoId', e.target.value)} placeholder="同じノードにまとめたい店舗で共通の id" /></label>
         <label>管理メモ<textarea value={form.memo} onChange={(e) => handleChange('memo', e.target.value)} rows={4} /></label>
         <section className="image-admin-panel">
           <div className="section-head"><h2>店舗写真</h2><span>最大3枚（1 / 2 / 3）</span></div>
@@ -1237,6 +1556,8 @@ function buildDraft(shop: Shop | null): ShopDraft {
     memo: shop?.memo ?? '',
     id: shop?.id,
     updatedAt: shop?.updatedAt,
+    parentId: shop?.parentId ?? null,
+    nodoId: shop?.nodoId ?? shop?.id ?? '',
   };
 }
 
@@ -1270,12 +1591,482 @@ function DetailItem({ label, value, multiline = false }: { label: string; value:
   );
 }
 
+
+function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; focusNodeId?: string } | null) ?? null;
+  const initialTag = (searchParams.get('tag') as Tag | null) ?? null;
+  const initialQuery = searchParams.get('q') ?? '';
+  const initialFocusNodeId = locationState?.focusNodeId ?? searchParams.get('focus');
+  const initialZoom = Number(searchParams.get('zoom') ?? '1');
+  const [activeTag, setActiveTag] = useState<Tag>(tags.includes(initialTag as Tag) ? (initialTag as Tag) : '直系');
+  const [query, setQuery] = useState(initialQuery);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(initialFocusNodeId);
+  const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(initialFocusNodeId);
+  const [zoom, setZoom] = useState(Number.isFinite(initialZoom) ? clamp(initialZoom, GENEALOGY_MIN_ZOOM, GENEALOGY_MAX_ZOOM) : 1);
+  const graph = useMemo(() => buildGenealogyGraph(shops, activeTag), [activeTag, shops]);
+  const boardViewportRef = useRef<HTMLDivElement | null>(null);
+  const pinchStateRef = useRef<{ distance: number; zoom: number; scrollLeft: number; scrollTop: number; centerX: number; centerY: number } | null>(null);
+  const hasAppliedInitialFocusRef = useRef(false);
+  const searchAutofocusKeyRef = useRef('');
+
+  const normalizedQuery = normalizeText(query);
+  const visibleNodes = useMemo(() => graph.columns.flat(), [graph.columns]);
+  const visibleEdges = useMemo(() => graph.edges, [graph.edges]);
+  const genealogyBackTo = locationState?.backTo ?? '/';
+  const genealogyBackState = locationState?.backState;
+
+  const matchedNodeIds = useMemo(() => {
+    if (!normalizedQuery) return new Set<string>();
+    const matches = new Set<string>();
+    graph.nodesById.forEach((node) => {
+      const searchableText = [node.name, node.subtitle, node.shopCount > 1 ? '複数店' : '店舗'].join(' ').toLowerCase();
+      if (searchableText.includes(normalizedQuery)) {
+        matches.add(node.id);
+      }
+    });
+    return matches;
+  }, [graph.nodesById, normalizedQuery]);
+
+  const matchedNodes = useMemo(() => visibleNodes.filter((node) => matchedNodeIds.has(node.id)), [matchedNodeIds, visibleNodes]);
+  const visibleColumns = useMemo(() => graph.columns, [graph.columns]);
+  const highlightMode = normalizedQuery.length > 0 || Boolean(highlightedNodeId);
+
+  const layout = useMemo(() => {
+    const colWidth = 232;
+    const colGap = 28;
+    const rowHeight = 132;
+    const rowGap = 24;
+    const paddingX = 20;
+    const paddingY = 20;
+
+    const visibleNodeMap = new Map(visibleNodes.map((node) => [node.id, node] as const));
+    const primaryChildren = new Map<string, string[]>();
+    visibleNodes.forEach((node) => primaryChildren.set(node.id, []));
+
+    visibleNodes.forEach((node) => {
+      const parents = (graph.parentsByNodeId.get(node.id) ?? []).filter((parentId) => visibleNodeMap.has(parentId));
+      if (!parents.length) return;
+      const primaryParentId = [...parents].sort((a, b) => {
+        const aDepth = graph.nodesById.get(a)?.depth ?? 0;
+        const bDepth = graph.nodesById.get(b)?.depth ?? 0;
+        if (aDepth !== bDepth) return aDepth - bDepth;
+        const aName = graph.nodesById.get(a)?.name ?? '';
+        const bName = graph.nodesById.get(b)?.name ?? '';
+        return aName.localeCompare(bName, 'ja');
+      })[0];
+      const next = primaryChildren.get(primaryParentId) ?? [];
+      next.push(node.id);
+      primaryChildren.set(primaryParentId, next);
+    });
+
+    primaryChildren.forEach((children, nodeId) => {
+      children.sort((a, b) => {
+        const aNode = graph.nodesById.get(a);
+        const bNode = graph.nodesById.get(b);
+        return (aNode?.name ?? '').localeCompare(bNode?.name ?? '', 'ja');
+      });
+      primaryChildren.set(nodeId, children);
+    });
+
+    const hasVisibleParent = (nodeId: string) => (graph.parentsByNodeId.get(nodeId) ?? []).some((parentId) => visibleNodeMap.has(parentId));
+    const rootIds = visibleNodes
+      .filter((node) => !hasVisibleParent(node.id))
+      .sort((a, b) => {
+        if (a.depth !== b.depth) return a.depth - b.depth;
+        return a.name.localeCompare(b.name, 'ja');
+      })
+      .map((node) => node.id);
+
+    const targetRowByNodeId = new Map<string, number>();
+    let leafCursor = 0;
+    const resolving = new Set<string>();
+
+    const assignTargetRow = (nodeId: string): number => {
+      const saved = targetRowByNodeId.get(nodeId);
+      if (saved !== undefined) return saved;
+      if (resolving.has(nodeId)) {
+        const fallback = leafCursor;
+        leafCursor += 1;
+        targetRowByNodeId.set(nodeId, fallback);
+        return fallback;
+      }
+
+      resolving.add(nodeId);
+      const childIds = primaryChildren.get(nodeId) ?? [];
+      if (!childIds.length) {
+        const row = leafCursor;
+        leafCursor += 1;
+        targetRowByNodeId.set(nodeId, row);
+        resolving.delete(nodeId);
+        return row;
+      }
+
+      const childRows = childIds.map((childId) => assignTargetRow(childId));
+      const row = (Math.min(...childRows) + Math.max(...childRows)) / 2;
+      targetRowByNodeId.set(nodeId, row);
+      resolving.delete(nodeId);
+      return row;
+    };
+
+    rootIds.forEach((nodeId) => assignTargetRow(nodeId));
+    visibleNodes.forEach((node) => assignTargetRow(node.id));
+
+    const slotRowByNodeId = new Map<string, number>();
+    visibleColumns.forEach((column) => {
+      const ordered = [...column].sort((a, b) => {
+        const rowDiff = (targetRowByNodeId.get(a.id) ?? 0) - (targetRowByNodeId.get(b.id) ?? 0);
+        if (rowDiff !== 0) return rowDiff;
+        return a.name.localeCompare(b.name, 'ja');
+      });
+
+      let cursor = 0;
+      ordered.forEach((node) => {
+        const desired = Math.round(targetRowByNodeId.get(node.id) ?? 0);
+        const slot = Math.max(cursor, desired);
+        slotRowByNodeId.set(node.id, slot);
+        cursor = slot + 1;
+      });
+    });
+
+    const positions = new Map<string, { x: number; y: number }>();
+    visibleNodes.forEach((node) => {
+      const row = slotRowByNodeId.get(node.id) ?? 0;
+      const x = paddingX + node.depth * (colWidth + colGap);
+      const y = paddingY + row * (rowHeight + rowGap);
+      positions.set(node.id, { x, y });
+    });
+
+    const maxDepth = visibleNodes.reduce((max, node) => Math.max(max, node.depth), 0);
+    const maxRow = visibleNodes.reduce((max, node) => Math.max(max, slotRowByNodeId.get(node.id) ?? 0), 0);
+
+    return {
+      positions,
+      boardWidth: paddingX * 2 + (maxDepth + 1) * colWidth + maxDepth * colGap,
+      boardHeight: paddingY * 2 + (Math.max(1, maxRow + 1)) * rowHeight + Math.max(0, maxRow) * rowGap,
+      colWidth,
+      rowHeight,
+    };
+  }, [graph.childrenByNodeId, graph.columns, graph.nodesById, graph.parentsByNodeId, visibleColumns, visibleNodes]);
+
+  const linePaths = useMemo(() => visibleEdges.map((edge) => {
+    const from = layout.positions.get(edge.from);
+    const to = layout.positions.get(edge.to);
+    if (!from || !to) return null;
+
+    const startX = from.x + layout.colWidth - 10;
+    const startY = from.y + layout.rowHeight / 2;
+    const endX = to.x + 10;
+    const endY = to.y + layout.rowHeight / 2;
+    const curve = Math.max(42, (endX - startX) * 0.35);
+    return `M ${startX} ${startY} C ${startX + curve} ${startY}, ${endX - curve} ${endY}, ${endX} ${endY}`;
+  }).filter((path): path is string => Boolean(path)), [layout.colWidth, layout.positions, layout.rowHeight, visibleEdges]);
+
+  const actualScale = zoom * GENEALOGY_BASE_SCALE;
+  const currentGenealogyUrl = buildGenealogyUrl({ tag: activeTag, query, focusNodeId: highlightedNodeId ?? focusedNodeId, zoom });
+
+  const focusNode = useCallback((nodeId: string, options?: { behavior?: ScrollBehavior; nextZoom?: number; highlight?: boolean }) => {
+    const container = boardViewportRef.current;
+    const position = layout.positions.get(nodeId);
+    const requestedZoom = clamp(options?.nextZoom ?? zoom, GENEALOGY_MIN_ZOOM, GENEALOGY_MAX_ZOOM);
+    const targetScale = requestedZoom * GENEALOGY_BASE_SCALE;
+
+    setFocusedNodeId(nodeId);
+    if (options?.highlight === true) setHighlightedNodeId(nodeId);
+    if (options?.highlight === false) setHighlightedNodeId(null);
+    if (Math.abs(requestedZoom - zoom) > 0.001) {
+      setZoom(requestedZoom);
+    }
+
+    if (!container || !position) {
+      return;
+    }
+
+    const targetLeft = position.x * targetScale - container.clientWidth / 2 + (layout.colWidth * targetScale) / 2;
+    const targetTop = position.y * targetScale - container.clientHeight / 2 + (layout.rowHeight * targetScale) / 2;
+    container.scrollTo({
+      left: Math.max(0, targetLeft),
+      top: Math.max(0, targetTop),
+      behavior: options?.behavior ?? 'smooth',
+    });
+  }, [layout.colWidth, layout.positions, layout.rowHeight, zoom]);
+
+  useEffect(() => {
+    if (normalizedQuery && matchedNodes.length > 0) {
+      const nextFocusId = matchedNodeIds.has(focusedNodeId ?? '') ? (focusedNodeId ?? matchedNodes[0].id) : matchedNodes[0].id;
+      const searchKey = `${activeTag}:${normalizedQuery}:${nextFocusId}`;
+      if (nextFocusId && searchAutofocusKeyRef.current !== searchKey) {
+        searchAutofocusKeyRef.current = searchKey;
+        window.requestAnimationFrame(() => focusNode(nextFocusId, { behavior: 'smooth', nextZoom: 1, highlight: true }));
+      }
+      return;
+    }
+
+    searchAutofocusKeyRef.current = '';
+    if (focusedNodeId && !graph.nodesById.has(focusedNodeId)) {
+      setFocusedNodeId(visibleNodes[0]?.id ?? null);
+    }
+    if (highlightedNodeId && !graph.nodesById.has(highlightedNodeId)) {
+      setHighlightedNodeId(null);
+    }
+  }, [activeTag, focusNode, focusedNodeId, graph.nodesById, highlightedNodeId, matchedNodeIds, matchedNodes, normalizedQuery, visibleNodes]);
+
+  useEffect(() => {
+    if (hasAppliedInitialFocusRef.current) return;
+    const targetNodeId = focusedNodeId ?? visibleNodes[0]?.id;
+    if (!targetNodeId) return;
+    hasAppliedInitialFocusRef.current = true;
+    window.requestAnimationFrame(() => {
+      focusNode(targetNodeId, { behavior: 'auto', nextZoom: zoom });
+    });
+  }, [focusNode, focusedNodeId, visibleNodes, zoom]);
+
+  useEffect(() => {
+    const container = boardViewportRef.current;
+    if (!container) return;
+
+    const readTouches = (touchList: TouchList) => Array.from(touchList).map((touch) => ({ clientX: touch.clientX, clientY: touch.clientY }));
+
+    const handleTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 2) {
+        pinchStateRef.current = null;
+        return;
+      }
+
+      const rect = container.getBoundingClientRect();
+      const touches = readTouches(event.touches);
+      pinchStateRef.current = {
+        distance: getTouchDistance(touches),
+        zoom,
+        scrollLeft: container.scrollLeft,
+        scrollTop: container.scrollTop,
+        centerX: ((touches[0].clientX + touches[1].clientX) / 2) - rect.left,
+        centerY: ((touches[0].clientY + touches[1].clientY) / 2) - rect.top,
+      };
+    };
+
+    const handleTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 2 || !pinchStateRef.current) return;
+
+      const touches = readTouches(event.touches);
+      const nextDistance = getTouchDistance(touches);
+      const pinch = pinchStateRef.current;
+      const nextZoom = clamp((nextDistance / pinch.distance) * pinch.zoom, GENEALOGY_MIN_ZOOM, GENEALOGY_MAX_ZOOM);
+      const prevScale = pinch.zoom * GENEALOGY_BASE_SCALE;
+      const nextScale = nextZoom * GENEALOGY_BASE_SCALE;
+      const contentX = (pinch.scrollLeft + pinch.centerX) / prevScale;
+      const contentY = (pinch.scrollTop + pinch.centerY) / prevScale;
+
+      event.preventDefault();
+      setZoom(nextZoom);
+      window.requestAnimationFrame(() => {
+        const viewport = boardViewportRef.current;
+        if (!viewport) return;
+        viewport.scrollLeft = Math.max(0, contentX * nextScale - pinch.centerX);
+        viewport.scrollTop = Math.max(0, contentY * nextScale - pinch.centerY);
+      });
+    };
+
+    const clearPinchState = () => {
+      pinchStateRef.current = null;
+    };
+
+    container.addEventListener('touchstart', handleTouchStart, { passive: true });
+    container.addEventListener('touchmove', handleTouchMove, { passive: false });
+    container.addEventListener('touchend', clearPinchState, { passive: true });
+    container.addEventListener('touchcancel', clearPinchState, { passive: true });
+
+    return () => {
+      container.removeEventListener('touchstart', handleTouchStart);
+      container.removeEventListener('touchmove', handleTouchMove);
+      container.removeEventListener('touchend', clearPinchState);
+      container.removeEventListener('touchcancel', clearPinchState);
+    };
+  }, [zoom]);
+
+  const emptyText = loading
+    ? '系譜を読み込み中です。'
+    : normalizedQuery
+      ? '検索に一致するノードがありません。'
+      : `${activeTag}の系譜データがまだありません。`;
+
+  return (
+    <main className="page genealogy-page genealogy-page-v2 genealogy-page-v3">
+      <section className="section compact genealogy-chart-section genealogy-chart-section-v2">
+        <div className="sticky-panel genealogy-control-panel">
+          <div className="genealogy-tab-row" role="tablist" aria-label="系統タブ">
+            {tags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                role="tab"
+                aria-selected={activeTag === tag}
+                className={`genealogy-tab-button ${activeTag === tag ? 'is-active' : ''}`.trim()}
+                onClick={() => {
+                  setActiveTag(tag);
+                  setQuery('');
+                  setFocusedNodeId(null);
+                  setHighlightedNodeId(null);
+                  setZoom(1);
+                  hasAppliedInitialFocusRef.current = false;
+                  searchAutofocusKeyRef.current = '';
+                }}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+
+          <div className="genealogy-search-row genealogy-search-row-with-back">
+            <button
+              type="button"
+              className="map-back-button genealogy-back-button"
+              aria-label="戻る"
+              onClick={() => navigate(genealogyBackTo, genealogyBackState ? { state: genealogyBackState } : undefined)}
+            >
+              ＜
+            </button>
+            <input
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                hasAppliedInitialFocusRef.current = false;
+                searchAutofocusKeyRef.current = '';
+                setHighlightedNodeId(null);
+              }}
+              className="full-input genealogy-search-input"
+              placeholder="店名・ノード名で検索"
+              aria-label="系譜ノードを検索"
+            />
+            <button type="button" className="secondary-button genealogy-clear-button" onClick={() => { setQuery(''); setHighlightedNodeId(null); searchAutofocusKeyRef.current = ''; }}>
+              クリア
+            </button>
+          </div>
+
+          <div className="genealogy-summary-row genealogy-zoom-row">
+            <span>{normalizedQuery ? `${matchedNodes.length}件ヒット` : `${visibleNodes.length}ノード`}</span>
+            <span>{Math.round(zoom * 100)}%</span>
+          </div>
+
+          {matchedNodes.length > 0 && (
+            <div className="genealogy-match-list" aria-label="検索結果ノード一覧">
+              {matchedNodes.slice(0, 24).map((node, index) => (
+                <button
+                  key={node.id}
+                  type="button"
+                  className={`genealogy-match-chip ${focusedNodeId === node.id ? 'is-active' : ''}`.trim()}
+                  onClick={() => {
+                    searchAutofocusKeyRef.current = `${activeTag}:${normalizedQuery}:${node.id}`;
+                    focusNode(node.id, { nextZoom: 1, highlight: true });
+                  }}
+                >
+                  {matchedNodes.length > 1 ? `${index + 1}. ${node.name}` : node.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {visibleNodes.length === 0 ? (
+          <div className="hero-card genealogy-empty-card">{emptyText}</div>
+        ) : (
+          <div
+            ref={boardViewportRef}
+            className="genealogy-board-viewport"
+            aria-label="家系ラーメンの系譜図"
+          >
+            <div className="genealogy-zoom-surface" style={{ width: `${layout.boardWidth * actualScale}px`, height: `${layout.boardHeight * actualScale}px` }}>
+              <div
+                className="genealogy-chart-board genealogy-chart-board-v2"
+                style={{ width: `${layout.boardWidth}px`, height: `${layout.boardHeight}px`, transform: `scale(${actualScale})`, transformOrigin: 'top left' }}
+              >
+                <svg className="genealogy-chart-lines genealogy-chart-lines-v2" viewBox={`0 0 ${layout.boardWidth} ${layout.boardHeight}`} preserveAspectRatio="none" aria-hidden="true">
+                  {linePaths.map((path, index) => <path key={`${path}-${index}`} d={path} />)}
+                </svg>
+
+                {visibleNodes.map((node) => {
+                  const position = layout.positions.get(node.id);
+                  if (!position) return null;
+                  const isFocused = focusedNodeId === node.id;
+                  const isHighlighted = highlightedNodeId === node.id;
+                  const isDimmed = highlightMode && !isHighlighted;
+                  const nodeBackTo = buildGenealogyUrl({ tag: activeTag, query, focusNodeId: node.id, zoom });
+                  return (
+                    <div
+                      key={node.id}
+                      className="genealogy-node-slot"
+                      style={{ left: `${position.x}px`, top: `${position.y}px`, width: `${layout.colWidth}px` }}
+                    >
+                      <GenealogyNodeCard
+                        node={node}
+                        compact={node.shopCount > 1}
+                        isMatched={isHighlighted}
+                        isDimmed={isDimmed}
+                        isFocused={isFocused}
+                        onFocus={() => { setFocusedNodeId(node.id); setHighlightedNodeId(node.id); }}
+                        backTo={nodeBackTo}
+                        backState={{ backTo: genealogyBackTo, backState: genealogyBackState }}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <BottomNav />
+    </main>
+  );
+}
+
+function GenealogyNodeCard({
+  node,
+  compact = false,
+  isMatched = false,
+  isDimmed = false,
+  isFocused = false,
+  onFocus,
+  backTo,
+  backState,
+}: {
+  node: GenealogyGraphNode;
+  compact?: boolean;
+  isMatched?: boolean;
+  isDimmed?: boolean;
+  isFocused?: boolean;
+  onFocus?: () => void;
+  backTo?: string;
+  backState?: Record<string, unknown>;
+}) {
+  const isList = node.link.kind === 'list';
+  return (
+    <Link
+      to={node.link.to}
+      className={`genealogy-node-card depth-${node.depth} accent-${node.accent} ${compact ? 'is-compact' : ''} ${isMatched ? 'is-matched' : ''} ${isDimmed ? 'is-dimmed' : ''} ${isFocused ? 'is-focused' : ''}`.trim()}
+      state={backTo ? { backTo, backState } : undefined}
+      aria-label={`${node.name} ${isList ? '結果一覧へ' : '店舗詳細へ'}`}
+      onClick={onFocus}
+    >
+      <strong>{node.name}</strong>
+      <small>{node.subtitle}</small>
+      <div className="genealogy-node-meta-row">
+        <span className="genealogy-node-count">{node.shopCount > 1 ? `${node.shopCount}店舗` : '1店舗'}</span>
+        <span className="genealogy-node-arrow">{isList ? '一覧へ' : '詳細へ'} ↗</span>
+      </div>
+    </Link>
+  );
+}
+
 function BottomNav({ className = '' }: { className?: string }) {
   return (
     <nav className={`bottom-nav three-col ${className}`.trim()}>
       <Link to="/">トップ</Link>
       <Link to="/map">マップ</Link>
-      <Link to="/shops">結果一覧</Link>
+      <Link to="/genealogy">系譜図</Link>
     </nav>
   );
 }

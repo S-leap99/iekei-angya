@@ -79,6 +79,8 @@ function cleanShop(raw: Partial<ShopDraft> & { id?: string; updatedAt?: string; 
     images,
     memo: raw.memo?.trim() || '',
     updatedAt: raw.updatedAt || todayString(),
+    parentId: raw.parentId ? String(raw.parentId).trim() || null : null,
+    nodoId: raw.nodoId ? String(raw.nodoId).trim() || String(raw.id ?? generateId()) : String(raw.id ?? generateId()),
   };
 }
 
@@ -137,6 +139,8 @@ function mapDbShop(row: Record<string, unknown>, images: ShopImage[]): Shop {
     images,
     memo: String(row.memo ?? ''),
     updatedAt: String(row.updated_at ?? todayString()),
+    parentId: row.parent_id ? String(row.parent_id) : null,
+    nodoId: String(row.nodo_id ?? row.id ?? generateId()),
   });
 }
 
@@ -161,6 +165,8 @@ function toDbShop(shop: Shop) {
     image: shop.image,
     memo: shop.memo,
     updated_at: shop.updatedAt,
+    parent_id: shop.parentId,
+    nodo_id: shop.nodoId,
   };
 }
 
@@ -184,6 +190,8 @@ function toDbShopInsertPayload(shop: Shop) {
     image: shop.image,
     memo: shop.memo,
     updated_at: shop.updatedAt,
+    parent_id: shop.parentId,
+    nodo_id: shop.nodoId,
   };
 }
 
@@ -363,6 +371,8 @@ function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, exi
     image: existingShop?.image || '',
     memo: (raw.memo || '').trim(),
     updatedAt: (raw.updated_at || '').trim() || existingShop?.updatedAt,
+    parentId: (raw.parent_id || '').trim() || null,
+    nodoId: (raw.nodo_id || '').trim() || existingShop?.nodoId || (raw.id.trim() || ''),
   };
 }
 
@@ -437,6 +447,11 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
     if (raw.official_account?.trim() && !validateUrl(raw.official_account.trim())) {
       reasons.push('official_account は http:// または https:// で始まるURLを入れてください。');
     }
+
+    if (raw.parent_id?.trim() && raw.parent_id.trim() === normalizedId) {
+      reasons.push('parent_id に自分自身の id は入れられません。');
+    }
+
 
     const duplicateKey = `${raw.name.trim()}__${raw.address.trim()}`;
     if (raw.name.trim() && raw.address.trim()) {

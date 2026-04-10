@@ -208,3 +208,51 @@ using (
 
 alter table public.shops drop column if exists access;
 alter table public.shops drop column if exists area;
+
+
+alter table public.shops
+  add column if not exists parent_id uuid null references public.shops(id) on delete set null,
+  add column if not exists nodo_id uuid null references public.shops(id) on delete set null;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'shops_parent_id_not_self'
+  ) THEN
+    ALTER TABLE public.shops
+      ADD CONSTRAINT shops_parent_id_not_self CHECK (parent_id IS NULL OR parent_id <> id);
+  END IF;
+
+END $$;
+
+create index if not exists shops_parent_id_idx on public.shops(parent_id);
+create index if not exists shops_nodo_id_idx on public.shops(nodo_id);
+
+create or replace function public.set_shop_nodo_id_default()
+returns trigger
+language plpgsql
+as $$
+begin
+  if new.id is null then
+    new.id := gen_random_uuid();
+  end if;
+
+  if new.nodo_id is null then
+    new.nodo_id := new.id;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists set_shop_nodo_id_default_trigger on public.shops;
+create trigger set_shop_nodo_id_default_trigger
+before insert or update on public.shops
+for each row
+execute function public.set_shop_nodo_id_default();
+
+update public.shops
+set nodo_id = id
+where nodo_id is null;
