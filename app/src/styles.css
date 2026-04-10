@@ -1189,3 +1189,16 @@ button { border: 0; cursor: pointer; }
     box-shadow: 0 6px 14px rgba(0,0,0,0.14);
   }
 }
+
+.genealogy-node-card.is-closed {
+  cursor: default;
+  pointer-events: none;
+  background: #3a3a3a;
+  border-color: #6e6e6e;
+  color: #f3f3f3;
+  box-shadow: none;
+}
+
+.genealogy-node-card.is-closed small {
+  color: #d7d7d7;
+}

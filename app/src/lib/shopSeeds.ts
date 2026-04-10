@@ -24,7 +24,9 @@ export const defaultShops: Shop[] = [
     memo: '昼営業が安定。写真追加候補あり。',
     updatedAt: '2026-03-20',
     parentId: null,
-    nodoId: '1'
+    nodoId: '1',
+    nodeName: '横浜家系 直伝家 本店',
+    isClosed: false
   },
   {
     id: '2',
@@ -48,7 +50,9 @@ export const defaultShops: Shop[] = [
     memo: '終日混雑しやすい。',
     updatedAt: '2026-03-19',
     parentId: '1',
-    nodoId: '2'
+    nodoId: '2',
+    nodeName: '濃厚家系 武骨家',
+    isClosed: false
   },
   {
     id: '3',
@@ -72,6 +76,8 @@ export const defaultShops: Shop[] = [
     memo: '駐車場3台。',
     updatedAt: '2026-03-18',
     parentId: '2',
-    nodoId: '3'
+    nodoId: '3',
+    nodeName: '家系ラーメン 松炎家',
+    isClosed: false
   }
 ];

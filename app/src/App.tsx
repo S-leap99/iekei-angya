@@ -34,6 +34,7 @@ type GenealogyGraphNode = {
   shopIds: string[];
   shopCount: number;
   tag: Tag;
+  isClosed: boolean;
 };
 
 type GenealogyGraphEdge = {
@@ -56,9 +57,17 @@ function getGenealogyAccent(tag: Tag): GenealogyNodeAccent {
   return 'independent';
 }
 
+function getNodeDisplayName(shop: Pick<Shop, 'name' | 'nodeName'>) {
+  return shop.nodeName?.trim() || shop.name.trim() || '名称未設定';
+}
+
+function isPublicShop(shop: Shop) {
+  return !shop.isClosed;
+}
+
 function getCommonNodeName(shops: Shop[]) {
-  if (shops.length === 1) return shops[0].name;
-  const names = shops.map((shop) => shop.name.trim()).filter(Boolean);
+  if (shops.length === 1) return getNodeDisplayName(shops[0]);
+  const names = shops.map((shop) => getNodeDisplayName(shop)).filter(Boolean);
   if (!names.length) return '名称未設定';
 
   let prefix = names[0];
@@ -123,22 +132,27 @@ function buildGenealogyGraph(shops: Shop[], activeTag: Tag): GenealogyGraph {
   });
 
   groups.forEach((groupShops, nodeId) => {
-    const sorted = [...groupShops].sort((a, b) => a.name.localeCompare(b.name, 'ja'));
-    const representative = sorted[0];
-    const isMulti = sorted.length > 1;
+    const sorted = [...groupShops].sort((a, b) => getNodeDisplayName(a).localeCompare(getNodeDisplayName(b), 'ja'));
+    const publicShops = sorted.filter(isPublicShop);
+    const closedShops = sorted.filter((shop) => shop.isClosed);
+    const representative = publicShops[0] ?? sorted[0];
+    const isClosedNode = publicShops.length === 0 && closedShops.length > 0;
+    const displayShops = isClosedNode ? closedShops : (publicShops.length ? publicShops : sorted);
+    const isMulti = !isClosedNode && publicShops.length > 1;
     nodesMap.set(nodeId, {
       id: nodeId,
       nodoId: nodeId,
-      name: getCommonNodeName(sorted),
-      subtitle: isMulti ? `${sorted.length}店舗をまとめて表示` : '店舗詳細へ',
+      name: getCommonNodeName(displayShops),
+      subtitle: isClosedNode ? '閉店済み' : (isMulti ? `${publicShops.length}店舗をまとめて表示` : '店舗詳細へ'),
       depth: 0,
       accent: getGenealogyAccent(representative.tag),
       link: isMulti
         ? { kind: 'list', to: `/shops?nodoId=${encodeURIComponent(nodeId)}` }
         : { kind: 'shop', to: `/shops/${representative.id}` },
-      shopIds: sorted.map((shop) => shop.id),
-      shopCount: sorted.length,
+      shopIds: displayShops.map((shop) => shop.id),
+      shopCount: displayShops.length,
       tag: representative.tag,
+      isClosed: isClosedNode,
     });
   });
 
@@ -334,6 +348,7 @@ function shopMatchesKeyword(shop: Shop, keyword: string) {
 
 function filterShops(shops: Shop[], filters: SearchFilters) {
   return shops.filter((shop) => {
+    if (!isPublicShop(shop)) return false;
     const hitKeyword = shopMatchesKeyword(shop, filters.q);
     const hitOrigin = !filters.origin || shop.origin === filters.origin;
     const hitTag = !filters.tag || shop.tag === filters.tag;
@@ -648,7 +663,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [activeFilters, setActiveFilters] = useState<SearchFilters>(initialFilters);
   const [draftFilters, setDraftFilters] = useState<SearchFilters>(initialFilters);
   const [expanded, setExpanded] = useState(initialEntrySource === 'searchResults' && !!(initialFilters.q || initialFilters.origin || initialFilters.tag || initialFilters.parking !== null));
-  const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id)) : filterShops(shops, initialFilters));
+  const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)) : filterShops(shops, initialFilters));
   const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
   const [mapZoom, setMapZoom] = useState(12);
   const [fitToShops, setFitToShops] = useState<boolean>(() => !ids.length);
@@ -672,7 +687,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setActiveFilters(initialFilters);
     setDraftFilters(initialFilters);
     if (ids.length) {
-      setVisibleShops(shops.filter((shop) => ids.includes(shop.id)));
+      setVisibleShops(shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)));
       setFitToShops(false);
     } else {
       const nextVisible = filterShops(shops, initialFilters);
@@ -782,7 +797,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setActiveFilters(clearedFilters);
     setHasMapSearched(false);
     setSelectedShopId('');
-    setVisibleShops(shops);
+    setVisibleShops(shops.filter(isPublicShop));
     setFitToShops(false);
     setUserPosition(null);
     setSearchMessage('');
@@ -1353,7 +1368,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
       <section className="section compact csv-panel">
         <div className="section-head"><h2>CSV一括インポート</h2><span>追加・更新対応</span></div>
         <p>{csvStatus}</p>
-        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,official_account,lat,lng,image,memo,updated_at,origin,genealogy,parent_id,nodo_id の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。parent_id / nodo_id もCSVで追加・更新できます。画像ファイルはCSVでは取り込みません。</p>
+        <p className="csv-help">列名は id,name,tag,address,station,hours,holiday,phone,seats,parking,official_url,official_account,lat,lng,image,memo,updated_at,origin,genealogy,parent_id,nodo_id,node_name,is_closed の順で入力してください。id がある行は既存店舗を更新し、id が空の行は新規追加します。parent_id / nodo_id もCSVで追加・更新できます。画像ファイルはCSVでは取り込みません。</p>
         <input type="file" accept=".csv" onChange={handleCsvSelect} disabled={csvBusy} />
         {csvFileName ? <p className="csv-help">選択中: {csvFileName}</p> : null}
         {csvPreview ? (
@@ -1503,6 +1518,8 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
         <label>経度<input value={String(form.lng)} onChange={(e) => handleChange('lng', Number(e.target.value))} /></label>
         <label>親店舗ID（parent_id）<input value={form.parentId ?? ''} onChange={(e) => handleChange('parentId', e.target.value || null)} placeholder="親ノードにしたい店舗の id" /></label>
         <label>ノードID（nodo_id）<input value={form.nodoId ?? ''} onChange={(e) => handleChange('nodoId', e.target.value)} placeholder="同じノードにまとめたい店舗で共通の id" /></label>
+        <label>ノード名（node_name）<input value={form.nodeName} onChange={(e) => handleChange('nodeName', e.target.value)} placeholder="未入力なら店舗名をそのまま使います" /></label>
+        <label className="checkbox-row"><input type="checkbox" checked={form.isClosed} onChange={(e) => handleChange('isClosed', e.target.checked)} />閉店済み</label>
         <label>管理メモ<textarea value={form.memo} onChange={(e) => handleChange('memo', e.target.value)} rows={4} /></label>
         <section className="image-admin-panel">
           <div className="section-head"><h2>店舗写真</h2><span>最大3枚（1 / 2 / 3）</span></div>
@@ -1558,6 +1575,8 @@ function buildDraft(shop: Shop | null): ShopDraft {
     updatedAt: shop?.updatedAt,
     parentId: shop?.parentId ?? null,
     nodoId: shop?.nodoId ?? shop?.id ?? '',
+    nodeName: shop?.nodeName ?? shop?.name ?? '',
+    isClosed: shop?.isClosed ?? false,
   };
 }
 
@@ -1990,8 +2009,8 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
                   const position = layout.positions.get(node.id);
                   if (!position) return null;
                   const isFocused = focusedNodeId === node.id;
-                  const isHighlighted = highlightedNodeId === node.id;
-                  const isDimmed = highlightMode && !isHighlighted;
+                  const isHighlighted = !node.isClosed && highlightedNodeId === node.id;
+                  const isDimmed = node.isClosed || (highlightMode && !isHighlighted);
                   const nodeBackTo = buildGenealogyUrl({ tag: activeTag, query, focusNodeId: node.id, zoom });
                   return (
                     <div
@@ -2043,10 +2062,21 @@ function GenealogyNodeCard({
   backState?: Record<string, unknown>;
 }) {
   const isList = node.link.kind === 'list';
+  const className = `genealogy-node-card depth-${node.depth} accent-${node.accent} ${compact ? 'is-compact' : ''} ${isMatched ? 'is-matched' : ''} ${isDimmed ? 'is-dimmed' : ''} ${isFocused ? 'is-focused' : ''} ${node.isClosed ? 'is-closed' : ''}`.trim();
+
+  if (node.isClosed) {
+    return (
+      <div className={className} aria-label={`${node.name} 閉店済み`}>
+        <strong>{node.name}</strong>
+        <small>閉店済み</small>
+      </div>
+    );
+  }
+
   return (
     <Link
       to={node.link.to}
-      className={`genealogy-node-card depth-${node.depth} accent-${node.accent} ${compact ? 'is-compact' : ''} ${isMatched ? 'is-matched' : ''} ${isDimmed ? 'is-dimmed' : ''} ${isFocused ? 'is-focused' : ''}`.trim()}
+      className={className}
       state={backTo ? { backTo, backState } : undefined}
       aria-label={`${node.name} ${isList ? '結果一覧へ' : '店舗詳細へ'}`}
       onClick={onFocus}

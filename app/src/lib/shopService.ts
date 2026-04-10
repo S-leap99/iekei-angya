@@ -81,6 +81,8 @@ function cleanShop(raw: Partial<ShopDraft> & { id?: string; updatedAt?: string; 
     updatedAt: raw.updatedAt || todayString(),
     parentId: raw.parentId ? String(raw.parentId).trim() || null : null,
     nodoId: raw.nodoId ? String(raw.nodoId).trim() || String(raw.id ?? generateId()) : String(raw.id ?? generateId()),
+    nodeName: raw.nodeName?.trim() || raw.name?.trim() || '名称未設定',
+    isClosed: Boolean(raw.isClosed),
   };
 }
 
@@ -141,6 +143,8 @@ function mapDbShop(row: Record<string, unknown>, images: ShopImage[]): Shop {
     updatedAt: String(row.updated_at ?? todayString()),
     parentId: row.parent_id ? String(row.parent_id) : null,
     nodoId: String(row.nodo_id ?? row.id ?? generateId()),
+    nodeName: String(row.node_name ?? row.name ?? ''),
+    isClosed: Boolean(row.is_closed),
   });
 }
 
@@ -167,6 +171,8 @@ function toDbShop(shop: Shop) {
     updated_at: shop.updatedAt,
     parent_id: shop.parentId,
     nodo_id: shop.nodoId,
+    node_name: shop.nodeName,
+    is_closed: shop.isClosed,
   };
 }
 
@@ -192,6 +198,8 @@ function toDbShopInsertPayload(shop: Shop) {
     updated_at: shop.updatedAt,
     parent_id: shop.parentId,
     nodo_id: shop.nodoId,
+    node_name: shop.nodeName,
+    is_closed: shop.isClosed,
   };
 }
 
@@ -373,6 +381,8 @@ function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, exi
     updatedAt: (raw.updated_at || '').trim() || existingShop?.updatedAt,
     parentId: (raw.parent_id || '').trim() || null,
     nodoId: (raw.nodo_id || '').trim() || existingShop?.nodoId || (raw.id.trim() || ''),
+    nodeName: existingShop?.nodeName || raw.name.trim(),
+    isClosed: existingShop?.isClosed ?? false,
   };
 }
 
