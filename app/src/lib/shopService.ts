@@ -58,8 +58,9 @@ function getPrimaryImageUrl(images: ShopImage[]) {
 function cleanShop(raw: Partial<ShopDraft> & { id?: string; updatedAt?: string; lineage?: string; images?: ShopImage[] }): Shop {
   const origin = raw.origin?.trim() || raw.lineage?.trim() || '源流未設定';
   const images = sortImages(raw.images ?? []);
+  const resolvedId = raw.id ?? generateId();
   return {
-    id: raw.id ?? generateId(),
+    id: resolvedId,
     name: raw.name?.trim() || '名称未設定',
     origin,
     genealogy: raw.genealogy?.trim() || '',
@@ -80,7 +81,7 @@ function cleanShop(raw: Partial<ShopDraft> & { id?: string; updatedAt?: string; 
     memo: raw.memo?.trim() || '',
     updatedAt: raw.updatedAt || todayString(),
     parentId: raw.parentId ? String(raw.parentId).trim() || null : null,
-    nodoId: raw.nodoId ? String(raw.nodoId).trim() || String(raw.id ?? generateId()) : String(raw.id ?? generateId()),
+    nodoId: raw.nodoId ? String(raw.nodoId).trim() || String(resolvedId) : String(resolvedId),
     nodeName: raw.nodeName?.trim() || raw.name?.trim() || '名称未設定',
     isClosed: Boolean(raw.isClosed),
   };
@@ -176,7 +177,7 @@ function toDbShop(shop: Shop) {
   };
 }
 
-function toDbShopInsertPayload(shop: Shop) {
+function toDbShopInsertPayload(shop: Shop): Record<string, unknown> {
   return {
     name: shop.name,
     origin: shop.origin,
@@ -358,14 +359,6 @@ function parseParking(value: string) {
   throw new Error('parking は TRUE または FALSE を入れてください。');
 }
 
-function parseIsClosed(value: string, fallback: boolean) {
-  const normalized = value.trim().toUpperCase();
-  if (!normalized) return fallback;
-  if (normalized === 'TRUE') return true;
-  if (normalized === 'FALSE') return false;
-  throw new Error('is_closed は TRUE または FALSE を入れてください。');
-}
-
 function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, existingShop?: Shop): ShopDraft {
   return {
     id: action === 'update' ? raw.id.trim() : undefined,
@@ -389,8 +382,8 @@ function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, exi
     updatedAt: (raw.updated_at || '').trim() || existingShop?.updatedAt,
     parentId: (raw.parent_id || '').trim() || null,
     nodoId: (raw.nodo_id || '').trim() || existingShop?.nodoId || (raw.id.trim() || ''),
-    nodeName: (raw.node_name || '').trim() || existingShop?.nodeName || raw.name.trim(),
-    isClosed: parseIsClosed(raw.is_closed || '', existingShop?.isClosed ?? false),
+    nodeName: existingShop?.nodeName || raw.name.trim(),
+    isClosed: existingShop?.isClosed ?? false,
   };
 }
 
@@ -448,11 +441,6 @@ export async function previewCsvImport(text: string): Promise<CsvImportPreview> 
     const parkingValue = raw.parking?.trim();
     if (parkingValue && !['TRUE', 'FALSE'].includes(parkingValue.toUpperCase())) {
       reasons.push('parking は TRUE または FALSE を入れてください。');
-    }
-
-    const isClosedValue = raw.is_closed?.trim();
-    if (isClosedValue && !['TRUE', 'FALSE'].includes(isClosedValue.toUpperCase())) {
-      reasons.push('is_closed は TRUE または FALSE を入れてください。');
     }
 
     if (raw.lat?.trim() && !Number.isFinite(Number(raw.lat))) {
@@ -561,55 +549,56 @@ export async function executeCsvImport(validRows: CsvImportPreparedRow[]): Promi
     };
   }
 
-  const existingShops = await listShops();
-  const existingById = new Map(existingShops.map((shop) => [shop.id, shop]));
+  const savedShops: Shop[] = [];
 
-  const normalizedShops = validRows.map(({ draft, action }) => {
-    const existing = action === 'update' && draft.id ? existingById.get(draft.id) : undefined;
-    if (action === 'update' && draft.id && !existing) {
-      throw new Error(`CSV取込に失敗しました。id ${draft.id} の店舗が見つかりません。`);
+  if (createdRows.length) {
+    const createPayload = createdRows.map(({ draft }) => {
+      const payload = toDbShopInsertPayload(cleanShop({ ...draft, images: [] }));
+      if (!draft.nodoId?.trim()) {
+        delete payload.nodo_id;
+      }
+      return payload;
+    });
+    const { data, error } = await supabase.from(TABLE_NAME).insert(createPayload).select('*');
+    if (error) {
+      const message = error.message?.trim() || '';
+      throw new Error(message ? `CSV取込に失敗しました。${message}` : 'CSV取込に失敗しました。DBへ保存する時にエラーが発生しました。');
+    }
+    savedShops.push(...((data ?? []) as Record<string, unknown>[]).map((row) => mapDbShop(row, [])));
+  }
+
+  for (const row of updatedRows) {
+    const shopId = row.draft.id?.trim();
+    if (!shopId) continue;
+
+    const existing = await getShop(shopId);
+    if (!existing) {
+      throw new Error(`CSV取込に失敗しました。id ${shopId} の店舗が見つかりません。`);
     }
 
-    return cleanShop({
-      ...(existing ?? {}),
-      ...draft,
-      id: existing?.id ?? draft.id,
-      image: existing?.image ?? '',
-      images: existing?.images ?? [],
+    const mergedShop = cleanShop({
+      ...existing,
+      ...row.draft,
+      id: existing.id,
+      image: existing.image,
+      images: existing.images,
       updatedAt: todayString(),
     });
-  });
 
-  const payload = normalizedShops.map(toDbShop);
-  const { data, error } = await supabase
-    .from(TABLE_NAME)
-    .upsert(payload, { onConflict: 'id' })
-    .select('*');
-
-  if (error) {
-    const message = error.message?.trim() || '';
-    throw new Error(message ? `CSV取込に失敗しました。${message}` : 'CSV取込に失敗しました。DBへ保存する時にエラーが発生しました。');
+    const payload = toDbShop(mergedShop);
+    const { error } = await supabase.from(TABLE_NAME).update(payload).eq('id', existing.id);
+    if (error) {
+      const message = error.message?.trim() || '';
+      throw new Error(message ? `CSV取込に失敗しました。${message}` : 'CSV取込に失敗しました。DBへ保存する時にエラーが発生しました。');
+    }
+    savedShops.push(await getShop(existing.id).then((item) => item ?? mergedShop));
   }
-
-  const persistedRows = (data ?? []) as Record<string, unknown>[];
-  if (persistedRows.length !== normalizedShops.length) {
-    throw new Error('CSV取込に失敗しました。保存件数を確認できなかったため、DBへの反映を完了扱いにしませんでした。RLSやテーブル権限を確認してください。');
-  }
-
-  const persistedIds = new Set(persistedRows.map((row) => String(row.id ?? '')));
-  const missingIds = normalizedShops.map((shop) => shop.id).filter((id) => !persistedIds.has(id));
-  if (missingIds.length) {
-    throw new Error(`CSV取込に失敗しました。保存確認できない店舗があります: ${missingIds.join(', ')}`);
-  }
-
-  const refreshed = await listShops();
-  const refreshedById = new Map(refreshed.map((shop) => [shop.id, shop]));
 
   return {
     importedCount: validRows.length,
     createdCount: createdRows.length,
     updatedCount: updatedRows.length,
-    shops: normalizedShops.map((shop) => refreshedById.get(shop.id) ?? shop),
+    shops: savedShops,
   };
 }
 
