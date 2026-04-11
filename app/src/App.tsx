@@ -389,6 +389,29 @@ function createEmptySearchFilters(): SearchFilters {
   return { q: '', origin: '', tag: '', parking: null, nodoId: '' };
 }
 
+function hasSearchFilters(filters: SearchFilters) {
+  return Boolean(filters.q.trim() || filters.origin.trim() || filters.tag || filters.parking !== null || filters.nodoId);
+}
+
+function canUseBrowserBack() {
+  if (typeof window === 'undefined') return false;
+  const historyState = window.history.state as { idx?: number } | null;
+  return typeof historyState?.idx === 'number' && historyState.idx > 0;
+}
+
+function navigateBack(
+  navigate: ReturnType<typeof useNavigate>,
+  fallbackTo = '/',
+  fallbackState?: Record<string, unknown>,
+) {
+  if (canUseBrowserBack()) {
+    navigate(-1);
+    return;
+  }
+
+  navigate(fallbackTo, fallbackState ? { replace: true, state: fallbackState } : { replace: true });
+}
+
 function useClickOutside<T extends HTMLElement>(onOutsideClick: () => void, enabled = true) {
   const ref = useRef<T | null>(null);
 
@@ -526,15 +549,24 @@ function AdminRoute({ children }: { children: ReactNode }) {
 }
 
 function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る', className = '', hideTitle = false }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string; className?: string; hideTitle?: boolean }) {
+  const navigate = useNavigate();
   const location = useLocation();
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
-  const resolvedBackTo = backTo ?? locationState?.backTo;
+  const resolvedBackTo = backTo ?? locationState?.backTo ?? '/';
   const resolvedBackState = backState ?? locationState?.backState;
 
   return (
     <header className={`page-header ${className}`.trim()}>
       <div>
-        {resolvedBackTo ? <Link to={resolvedBackTo} state={resolvedBackState} className="back-link">{backLabel}</Link> : <span className="eyebrow">{eyebrow}</span>}
+        {(backTo || locationState?.backTo || canUseBrowserBack()) ? (
+          <button
+            type="button"
+            className="back-link back-link-button"
+            onClick={() => navigateBack(navigate, resolvedBackTo, resolvedBackState)}
+          >
+            {backLabel}
+          </button>
+        ) : <span className="eyebrow">{eyebrow}</span>}
         {hideTitle ? null : <h1>{title}</h1>}
       </div>
     </header>
@@ -675,12 +707,16 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const lastOsmRequestAtRef = useRef(0);
   const mapViewRef = useRef<MapViewSnapshot>({ center: defaultCenter, zoom: 12 });
   const preserveViewOnNextSyncRef = useRef(false);
+  const skipAutoSelectOnNextSyncRef = useRef(false);
+  const selectedShopSourceRef = useRef<'mapPin' | 'other'>('other');
+  const allPublicShops = useMemo(() => shops.filter(isPublicShop), [shops]);
 
   useEffect(() => {
     setEntrySource(initialEntrySource);
   }, [initialEntrySource]);
 
   useEffect(() => {
+    selectedShopSourceRef.current = 'other';
     setSelectedShopId(initialSelected);
   }, [initialSelected]);
 
@@ -689,9 +725,14 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setActiveFilters(initialFilters);
     setDraftFilters(initialFilters);
     if (ids.length) {
-      setVisibleShops(shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)));
+      const nextVisible = shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop));
+      setVisibleShops(nextVisible);
       setFitToShops(false);
       preserveViewOnNextSyncRef.current = false;
+      if (nextVisible.length === 1 && initialSelected) {
+        selectedShopSourceRef.current = 'other';
+        setSelectedShopId(initialSelected);
+      }
     } else {
       const nextVisible = filterShops(shops, initialFilters);
       setVisibleShops(nextVisible);
@@ -699,18 +740,26 @@ function MapPage({ shops }: { shops: Shop[] }) {
       if (shouldPreserveView) {
         preserveViewOnNextSyncRef.current = false;
       }
+      const hasInitialFilters = hasSearchFilters(initialFilters);
+      const shouldAutoSelectSingle = hasInitialFilters && nextVisible.length === 1 && !skipAutoSelectOnNextSyncRef.current;
       const shouldFitAll = shouldPreserveView
         ? false
-        : (Boolean(initialFilters.q || initialFilters.origin || initialFilters.tag || initialFilters.parking !== null)
-          ? nextVisible.length > 0
-          : selectedShopId ? false : !hasMapSearched);
+        : (hasInitialFilters ? nextVisible.length > 1 : selectedShopId ? false : !hasMapSearched);
       setFitToShops(shouldFitAll);
+      if (skipAutoSelectOnNextSyncRef.current) {
+        skipAutoSelectOnNextSyncRef.current = false;
+      }
+      if (shouldAutoSelectSingle) {
+        selectedShopSourceRef.current = 'other';
+        setSelectedShopId(nextVisible[0]?.id ?? '');
+      }
     }
     setSearchMessage('');
   }, [hasMapSearched, ids, initialFilters, selectedShopId, shops]);
 
   useEffect(() => {
     if (selectedShopId && !visibleShops.some((shop) => shop.id === selectedShopId)) {
+      selectedShopSourceRef.current = 'other';
       setSelectedShopId('');
     }
   }, [selectedShopId, visibleShops]);
@@ -757,6 +806,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         setMapCenter(nextPosition);
         setMapZoom(15);
         setFitToShops(false);
+        selectedShopSourceRef.current = 'other';
         setSelectedShopId('');
         setSearchMessage('');
       },
@@ -791,15 +841,69 @@ function MapPage({ shops }: { shops: Shop[] }) {
     };
   }, []);
 
-  const hasActiveMapFilter = Boolean(activeFilters.q.trim() || activeFilters.origin.trim() || activeFilters.tag || activeFilters.parking !== null || ids.length);
+  const hasActiveMapFilter = hasSearchFilters(activeFilters) || ids.length > 0;
 
-  const handleCloseCard = () => {
+  const handleCloseCard = useCallback(() => {
+    const currentView = mapViewRef.current;
+    const wasSelectedFromMapPin = selectedShopSourceRef.current === 'mapPin';
+    selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
-    if (hasActiveMapFilter) {
+
+    const hadIdFilter = ids.length > 0;
+    const hadSearchFilter = hasSearchFilters(activeFilters);
+    const hadSubsetFilter = hadIdFilter || hadSearchFilter;
+    const hadMultipleFilteredShops = visibleShops.length > 1;
+
+    if (wasSelectedFromMapPin && hadSubsetFilter && hadMultipleFilteredShops) {
       setFitToShops(true);
       setFitRequestKey((current) => current + 1);
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('selected');
+      setSearchParams(nextParams, { replace: true });
+      return;
     }
-  };
+
+    if (wasSelectedFromMapPin) {
+      preserveViewOnNextSyncRef.current = true;
+      setFitToShops(false);
+      setMapCenter(currentView.center);
+      setMapZoom(currentView.zoom);
+
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('selected');
+      setSearchParams(nextParams, { replace: true });
+      return;
+    }
+
+    if (hadIdFilter || (hadSearchFilter && !hadMultipleFilteredShops)) {
+      preserveViewOnNextSyncRef.current = true;
+      skipAutoSelectOnNextSyncRef.current = true;
+      setVisibleShops(allPublicShops);
+      setFitToShops(false);
+      setMapCenter(currentView.center);
+      setMapZoom(currentView.zoom);
+
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('selected');
+      nextParams.delete('ids');
+      setSearchParams(nextParams, { replace: true });
+      return;
+    }
+
+    if (hadSubsetFilter && hadMultipleFilteredShops) {
+      setFitToShops(true);
+      setFitRequestKey((current) => current + 1);
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete('selected');
+      setSearchParams(nextParams, { replace: true });
+      return;
+    }
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('selected');
+    setSearchParams(nextParams, { replace: true });
+    setFitToShops(false);
+  }, [activeFilters, allPublicShops, ids.length, searchParams, setSearchParams, visibleShops.length]);
 
   const handleClearMapSearch = useCallback(() => {
     const clearedFilters = createEmptySearchFilters();
@@ -809,15 +913,16 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setDraftFilters(clearedFilters);
     setActiveFilters(clearedFilters);
     setHasMapSearched(false);
+    selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
-    setVisibleShops(shops.filter(isPublicShop));
+    setVisibleShops(allPublicShops);
     setFitToShops(false);
     setUserPosition(null);
     setSearchMessage('');
     setMapCenter(currentView.center);
     setMapZoom(currentView.zoom);
     setSearchParams(new URLSearchParams(), { replace: true });
-  }, [setSearchParams, shops]);
+  }, [allPublicShops, setSearchParams]);
 
   const applyMapSearch = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -825,16 +930,26 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setDraftFilters(nextFilters);
     setActiveFilters(nextFilters);
     setHasMapSearched(true);
+    selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
     setSearchMessage('');
     setUserPosition(null);
 
     const nextVisibleShops = filterShops(shops, nextFilters);
     setVisibleShops(nextVisibleShops);
-    setSearchParams(buildSearchParams(nextFilters), { replace: true });
+
+    const nextParams = buildSearchParams(nextFilters);
+    if (nextVisibleShops.length === 1) {
+      nextParams.set('selected', nextVisibleShops[0].id);
+      selectedShopSourceRef.current = 'other';
+      setSelectedShopId(nextVisibleShops[0].id);
+      setFitToShops(false);
+    } else {
+      setFitToShops(nextVisibleShops.length > 1);
+    }
+    setSearchParams(nextParams, { replace: true });
 
     if (nextVisibleShops.length) {
-      setFitToShops(true);
       setUserPosition(null);
       return;
     }
@@ -862,6 +977,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         setFitToShops(false);
         return;
       }
+      setVisibleShops(allPublicShops);
       setMapCenter(result.center);
       setMapZoom(15);
       setFitToShops(false);
@@ -878,7 +994,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
       <MapSearchHeader
         value={searchText}
         onValueChange={setSearchText}
-        onBack={() => navigate(backTarget, backState ? { state: backState } : undefined)}
+        onBack={() => navigateBack(navigate, backTarget, backState)}
         onClear={handleClearMapSearch}
         expanded={expanded}
         onToggleExpanded={() => setExpanded((current) => !current)}
@@ -901,7 +1017,18 @@ function MapPage({ shops }: { shops: Shop[] }) {
                   key={shop.id}
                   position={[shop.lat, shop.lng]}
                   icon={createShopMarkerIcon(selected)}
-                  eventHandlers={{ click: () => setSelectedShopId((current) => current === shop.id ? '' : shop.id) }}
+                  eventHandlers={{
+                    click: () => {
+                      if (selectedShopId === shop.id) {
+                        selectedShopSourceRef.current = 'other';
+                        setSelectedShopId('');
+                        return;
+                      }
+
+                      selectedShopSourceRef.current = 'mapPin';
+                      setSelectedShopId(shop.id);
+                    }
+                  }}
                 />
               );
             })}
@@ -1799,6 +1926,33 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
   const actualScale = zoom * GENEALOGY_BASE_SCALE;
   const currentGenealogyUrl = buildGenealogyUrl({ tag: activeTag, query, focusNodeId: highlightedNodeId ?? focusedNodeId, zoom });
 
+  useEffect(() => {
+    const nextTag = (searchParams.get('tag') as Tag | null) ?? null;
+    const nextQuery = searchParams.get('q') ?? '';
+    const nextFocusNodeId = locationState?.focusNodeId ?? searchParams.get('focus');
+    const nextZoomParam = Number(searchParams.get('zoom') ?? '1');
+    const nextZoom = Number.isFinite(nextZoomParam) ? clamp(nextZoomParam, GENEALOGY_MIN_ZOOM, GENEALOGY_MAX_ZOOM) : 1;
+
+    if (tags.includes(nextTag as Tag) && nextTag !== activeTag) {
+      setActiveTag(nextTag as Tag);
+    }
+    if (nextQuery !== query) {
+      setQuery(nextQuery);
+    }
+    if (Math.abs(nextZoom - zoom) > 0.001) {
+      setZoom(nextZoom);
+    }
+    if (nextFocusNodeId !== focusedNodeId) {
+      setFocusedNodeId(nextFocusNodeId);
+      setHighlightedNodeId(nextFocusNodeId);
+      hasAppliedInitialFocusRef.current = false;
+      searchAutofocusKeyRef.current = '';
+    }
+    if (!nextFocusNodeId && highlightedNodeId) {
+      setHighlightedNodeId(null);
+    }
+  }, [location.key, locationState?.focusNodeId, searchParams]);
+
   const focusNode = useCallback((nodeId: string, options?: { behavior?: ScrollBehavior; nextZoom?: number; highlight?: boolean }) => {
     const container = boardViewportRef.current;
     const position = layout.positions.get(nodeId);
@@ -1956,7 +2110,7 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
               type="button"
               className="map-back-button genealogy-back-button"
               aria-label="戻る"
-              onClick={() => navigate(genealogyBackTo, genealogyBackState ? { state: genealogyBackState } : undefined)}
+              onClick={() => navigateBack(navigate, genealogyBackTo, genealogyBackState)}
             >
               ＜
             </button>
@@ -2038,6 +2192,11 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
                         isDimmed={isDimmed}
                         isFocused={isFocused}
                         onFocus={() => { setFocusedNodeId(node.id); setHighlightedNodeId(node.id); }}
+                        onPrepareBackEntry={() => {
+                          if (typeof window !== 'undefined') {
+                            window.history.replaceState(window.history.state, '', nodeBackTo);
+                          }
+                        }}
                         backTo={nodeBackTo}
                         backState={{ backTo: genealogyBackTo, backState: genealogyBackState }}
                       />
@@ -2062,6 +2221,7 @@ function GenealogyNodeCard({
   isDimmed = false,
   isFocused = false,
   onFocus,
+  onPrepareBackEntry,
   backTo,
   backState,
 }: {
@@ -2071,6 +2231,7 @@ function GenealogyNodeCard({
   isDimmed?: boolean;
   isFocused?: boolean;
   onFocus?: () => void;
+  onPrepareBackEntry?: () => void;
   backTo?: string;
   backState?: Record<string, unknown>;
 }) {
@@ -2092,7 +2253,10 @@ function GenealogyNodeCard({
       className={className}
       state={backTo ? { backTo, backState } : undefined}
       aria-label={`${node.name} ${isList ? '結果一覧へ' : '店舗詳細へ'}`}
-      onClick={onFocus}
+      onClick={() => {
+        onPrepareBackEntry?.();
+        onFocus?.();
+      }}
     >
       <strong>{node.name}</strong>
       <small>{node.subtitle}</small>
