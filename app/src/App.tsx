@@ -687,11 +687,13 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const initialFilters = useMemo(() => readSearchFilters(searchParams), [searchParams]);
   const ids = useMemo(() => (searchParams.get('ids') ?? '').split(',').filter(Boolean), [searchParams]);
   const initialSelected = searchParams.get('selected') ?? '';
+  const initialOsmMode = searchParams.get('osm') === '1';
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; autoLocate?: boolean; entrySource?: MapEntrySource } | null) ?? null;
   const initialEntrySource: MapEntrySource = locationState?.entrySource ?? 'home';
   const [entrySource, setEntrySource] = useState<MapEntrySource>(initialEntrySource);
   const [hasMapSearched, setHasMapSearched] = useState(false);
   const [selectedShopId, setSelectedShopId] = useState(initialSelected);
+  const [isOsmSearchMode, setIsOsmSearchMode] = useState(initialOsmMode);
   const [searchText, setSearchText] = useState(initialFilters.q);
   const [activeFilters, setActiveFilters] = useState<SearchFilters>(initialFilters);
   const [draftFilters, setDraftFilters] = useState<SearchFilters>(initialFilters);
@@ -716,6 +718,10 @@ function MapPage({ shops }: { shops: Shop[] }) {
   }, [initialEntrySource]);
 
   useEffect(() => {
+    setIsOsmSearchMode(initialOsmMode);
+  }, [initialOsmMode]);
+
+  useEffect(() => {
     selectedShopSourceRef.current = 'other';
     setSelectedShopId(initialSelected);
   }, [initialSelected]);
@@ -734,28 +740,29 @@ function MapPage({ shops }: { shops: Shop[] }) {
         setSelectedShopId(initialSelected);
       }
     } else {
-      const nextVisible = filterShops(shops, initialFilters);
+      const filteredShops = filterShops(shops, initialFilters);
+      const nextVisible = isOsmSearchMode ? allPublicShops : filteredShops;
       setVisibleShops(nextVisible);
       const shouldPreserveView = preserveViewOnNextSyncRef.current;
       if (shouldPreserveView) {
         preserveViewOnNextSyncRef.current = false;
       }
       const hasInitialFilters = hasSearchFilters(initialFilters);
-      const shouldAutoSelectSingle = hasInitialFilters && nextVisible.length === 1 && !skipAutoSelectOnNextSyncRef.current;
+      const shouldAutoSelectSingle = !isOsmSearchMode && hasInitialFilters && filteredShops.length === 1 && !skipAutoSelectOnNextSyncRef.current;
       const shouldFitAll = shouldPreserveView
         ? false
-        : (hasInitialFilters ? nextVisible.length > 1 : selectedShopId ? false : !hasMapSearched);
+        : (isOsmSearchMode ? false : (hasInitialFilters ? filteredShops.length > 1 : selectedShopId ? false : !hasMapSearched));
       setFitToShops(shouldFitAll);
       if (skipAutoSelectOnNextSyncRef.current) {
         skipAutoSelectOnNextSyncRef.current = false;
       }
       if (shouldAutoSelectSingle) {
         selectedShopSourceRef.current = 'other';
-        setSelectedShopId(nextVisible[0]?.id ?? '');
+        setSelectedShopId(filteredShops[0]?.id ?? '');
       }
     }
     setSearchMessage('');
-  }, [hasMapSearched, ids, initialFilters, selectedShopId, shops]);
+  }, [allPublicShops, hasMapSearched, ids, initialFilters, isOsmSearchMode, selectedShopId, shops]);
 
   useEffect(() => {
     if (selectedShopId && !visibleShops.some((shop) => shop.id === selectedShopId)) {
@@ -774,18 +781,22 @@ function MapPage({ shops }: { shops: Shop[] }) {
 
   const currentMapUrl = useMemo(() => {
     const params = hasMapSearched ? buildSearchParams(activeFilters) : new URLSearchParams(searchParams);
+    if (isOsmSearchMode) params.set('osm', '1');
+    else params.delete('osm');
     if (selectedShopId) params.set('selected', selectedShopId);
     else params.delete('selected');
     const query = params.toString();
     return `/map${query ? `?${query}` : ''}`;
-  }, [activeFilters, hasMapSearched, searchParams, selectedShopId]);
+  }, [activeFilters, hasMapSearched, isOsmSearchMode, searchParams, selectedShopId]);
 
   const mapReturnUrl = useMemo(() => {
     const params = hasMapSearched ? buildSearchParams(activeFilters) : new URLSearchParams(searchParams);
+    if (isOsmSearchMode) params.set('osm', '1');
+    else params.delete('osm');
     params.delete('selected');
     const query = params.toString();
     return `/map${query ? `?${query}` : ''}`;
-  }, [activeFilters, hasMapSearched, searchParams]);
+  }, [activeFilters, hasMapSearched, isOsmSearchMode, searchParams]);
 
   const backTarget = entrySource === 'detail'
     ? (locationState?.backTo ?? '/')
@@ -850,7 +861,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setSelectedShopId('');
 
     const hadIdFilter = ids.length > 0;
-    const hadSearchFilter = hasSearchFilters(activeFilters);
+    const hadSearchFilter = hasSearchFilters(activeFilters) && !isOsmSearchMode;
     const hadSubsetFilter = hadIdFilter || hadSearchFilter;
     const hadMultipleFilteredShops = visibleShops.length > 1;
 
@@ -913,6 +924,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setDraftFilters(clearedFilters);
     setActiveFilters(clearedFilters);
     setHasMapSearched(false);
+    setIsOsmSearchMode(false);
     selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
     setVisibleShops(allPublicShops);
@@ -930,6 +942,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setDraftFilters(nextFilters);
     setActiveFilters(nextFilters);
     setHasMapSearched(true);
+    setIsOsmSearchMode(false);
     selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
     setSearchMessage('');
@@ -939,6 +952,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setVisibleShops(nextVisibleShops);
 
     const nextParams = buildSearchParams(nextFilters);
+    nextParams.delete('osm');
     if (nextVisibleShops.length === 1) {
       nextParams.set('selected', nextVisibleShops[0].id);
       selectedShopSourceRef.current = 'other';
@@ -981,6 +995,9 @@ function MapPage({ shops }: { shops: Shop[] }) {
       setMapCenter(result.center);
       setMapZoom(15);
       setFitToShops(false);
+      setIsOsmSearchMode(true);
+      nextParams.set('osm', '1');
+      setSearchParams(nextParams, { replace: true });
     } catch (err) {
       setSearchMessage(err instanceof Error ? err.message : '地点検索に失敗しました。');
       setFitToShops(false);
