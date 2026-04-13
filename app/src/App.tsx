@@ -1036,14 +1036,20 @@ function MapPage({ shops }: { shops: Shop[] }) {
                   icon={createShopMarkerIcon(selected)}
                   eventHandlers={{
                     click: () => {
+                      const nextParams = new URLSearchParams(searchParams);
+
                       if (selectedShopId === shop.id) {
                         selectedShopSourceRef.current = 'other';
                         setSelectedShopId('');
+                        nextParams.delete('selected');
+                        setSearchParams(nextParams, { replace: true });
                         return;
                       }
 
                       selectedShopSourceRef.current = 'mapPin';
                       setSelectedShopId(shop.id);
+                      nextParams.set('selected', shop.id);
+                      setSearchParams(nextParams, { replace: true });
                     }
                   }}
                 />
