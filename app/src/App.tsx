@@ -856,65 +856,33 @@ function MapPage({ shops }: { shops: Shop[] }) {
 
   const handleCloseCard = useCallback(() => {
     const currentView = mapViewRef.current;
-    const wasSelectedFromMapPin = selectedShopSourceRef.current === 'mapPin';
-    selectedShopSourceRef.current = 'other';
-    setSelectedShopId('');
-
     const hadIdFilter = ids.length > 0;
     const hadSearchFilter = hasSearchFilters(activeFilters) && !isOsmSearchMode;
     const hadSubsetFilter = hadIdFilter || hadSearchFilter;
     const hadMultipleFilteredShops = visibleShops.length > 1;
 
-    if (wasSelectedFromMapPin && hadSubsetFilter && hadMultipleFilteredShops) {
-      setFitToShops(true);
-      setFitRequestKey((current) => current + 1);
-      const nextParams = new URLSearchParams(searchParams);
-      nextParams.delete('selected');
-      setSearchParams(nextParams, { replace: true });
-      return;
-    }
+    selectedShopSourceRef.current = 'other';
+    setSelectedShopId('');
 
-    if (wasSelectedFromMapPin) {
-      preserveViewOnNextSyncRef.current = true;
-      setFitToShops(false);
-      setMapCenter(currentView.center);
-      setMapZoom(currentView.zoom);
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete('selected');
 
-      const nextParams = new URLSearchParams(searchParams);
-      nextParams.delete('selected');
-      setSearchParams(nextParams, { replace: true });
-      return;
-    }
-
-    if (hadIdFilter || (hadSearchFilter && !hadMultipleFilteredShops)) {
+    if (!hadSubsetFilter || !hadMultipleFilteredShops) {
       preserveViewOnNextSyncRef.current = true;
       skipAutoSelectOnNextSyncRef.current = true;
       setVisibleShops(allPublicShops);
       setFitToShops(false);
       setMapCenter(currentView.center);
       setMapZoom(currentView.zoom);
-
-      const nextParams = new URLSearchParams(searchParams);
-      nextParams.delete('selected');
       nextParams.delete('ids');
       setSearchParams(nextParams, { replace: true });
       return;
     }
 
-    if (hadSubsetFilter && hadMultipleFilteredShops) {
-      setFitToShops(true);
-      setFitRequestKey((current) => current + 1);
-      const nextParams = new URLSearchParams(searchParams);
-      nextParams.delete('selected');
-      setSearchParams(nextParams, { replace: true });
-      return;
-    }
-
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete('selected');
+    setFitToShops(true);
+    setFitRequestKey((current) => current + 1);
     setSearchParams(nextParams, { replace: true });
-    setFitToShops(false);
-  }, [activeFilters, allPublicShops, ids.length, searchParams, setSearchParams, visibleShops.length]);
+  }, [activeFilters, allPublicShops, ids.length, isOsmSearchMode, searchParams, setSearchParams, visibleShops.length]);
 
   const handleClearMapSearch = useCallback(() => {
     const clearedFilters = createEmptySearchFilters();
@@ -1781,7 +1749,7 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; focusNodeId?: string } | null) ?? null;
   const initialTag = (searchParams.get('tag') as Tag | null) ?? null;
   const initialQuery = searchParams.get('q') ?? '';
-  const initialFocusNodeId = locationState?.focusNodeId ?? searchParams.get('focus');
+  const initialFocusNodeId = searchParams.get('focus') ?? locationState?.focusNodeId ?? null;
   const initialZoom = Number(searchParams.get('zoom') ?? '1');
   const [activeTag, setActiveTag] = useState<Tag>(tags.includes(initialTag as Tag) ? (initialTag as Tag) : '直系');
   const [query, setQuery] = useState(initialQuery);
@@ -1821,8 +1789,10 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
     const colGap = 28;
     const rowHeight = 132;
     const rowGap = 24;
-    const paddingX = 20;
-    const paddingY = 20;
+    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 390;
+    const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 844;
+    const paddingX = Math.max(96, Math.ceil(viewportWidth / (GENEALOGY_BASE_SCALE * 2)) + 40);
+    const paddingY = Math.max(96, Math.ceil(viewportHeight / (GENEALOGY_BASE_SCALE * 2)) + 40);
 
     const visibleNodeMap = new Map(visibleNodes.map((node) => [node.id, node] as const));
     const primaryChildren = new Map<string, string[]>();
@@ -1952,7 +1922,7 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
   useEffect(() => {
     const nextTag = (searchParams.get('tag') as Tag | null) ?? null;
     const nextQuery = searchParams.get('q') ?? '';
-    const nextFocusNodeId = locationState?.focusNodeId ?? searchParams.get('focus');
+    const nextFocusNodeId = searchParams.get('focus') ?? locationState?.focusNodeId ?? null;
     const nextZoomParam = Number(searchParams.get('zoom') ?? '1');
     const nextZoom = Number.isFinite(nextZoomParam) ? clamp(nextZoomParam, GENEALOGY_MIN_ZOOM, GENEALOGY_MAX_ZOOM) : 1;
 
@@ -2274,7 +2244,7 @@ function GenealogyNodeCard({
     <Link
       to={node.link.to}
       className={className}
-      state={backTo ? { backTo, backState } : undefined}
+      state={backTo ? { backTo, backState, focusNodeId: node.id } : { focusNodeId: node.id }}
       aria-label={`${node.name} ${isList ? '結果一覧へ' : '店舗詳細へ'}`}
       onClick={() => {
         onPrepareBackEntry?.();
