@@ -359,10 +359,24 @@ function parseParking(value: string) {
   throw new Error('parking は TRUE または FALSE を入れてください。');
 }
 
+function parseBooleanWithDefault(value: string, defaultValue: boolean) {
+  const normalized = value.trim().toUpperCase();
+  if (!normalized) return defaultValue;
+  if (normalized === 'TRUE') return true;
+  if (normalized === 'FALSE') return false;
+  throw new Error('TRUE または FALSE を入れてください。');
+}
+
 function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, existingShop?: Shop): ShopDraft {
+  const normalizedName = raw.name.trim();
+  const normalizedId = raw.id.trim();
+  const normalizedNodeId = (raw.nodo_id || '').trim();
+  const normalizedNodeName = (raw.node_name || '').trim();
+  const fallbackNodeId = existingShop?.nodoId || (action === 'update' ? normalizedId : '');
+
   return {
-    id: action === 'update' ? raw.id.trim() : undefined,
-    name: raw.name.trim(),
+    id: action === 'update' ? normalizedId : undefined,
+    name: normalizedName,
     origin: (raw.origin || '').trim() || '源流未設定',
     genealogy: (raw.genealogy || '').trim(),
     tag: normalizeTag(raw.tag.trim()),
@@ -381,9 +395,9 @@ function buildCsvDraft(raw: Record<string, string>, action: CsvImportAction, exi
     memo: (raw.memo || '').trim(),
     updatedAt: (raw.updated_at || '').trim() || existingShop?.updatedAt,
     parentId: (raw.parent_id || '').trim() || null,
-    nodoId: (raw.nodo_id || '').trim() || existingShop?.nodoId || (raw.id.trim() || ''),
-    nodeName: existingShop?.nodeName || raw.name.trim(),
-    isClosed: existingShop?.isClosed ?? false,
+    nodoId: normalizedNodeId || fallbackNodeId,
+    nodeName: normalizedNodeName || existingShop?.nodeName || normalizedName,
+    isClosed: parseBooleanWithDefault(raw.is_closed || '', existingShop?.isClosed ?? false),
   };
 }
 

@@ -61,6 +61,13 @@ function getNodeDisplayName(shop: Pick<Shop, 'name' | 'nodeName'>) {
   return shop.nodeName?.trim() || shop.name.trim() || '名称未設定';
 }
 
+function blurActiveElement() {
+  const active = document.activeElement;
+  if (active instanceof HTMLElement) {
+    active.blur();
+  }
+}
+
 function isPublicShop(shop: Shop) {
   return !shop.isClosed;
 }
@@ -583,14 +590,20 @@ function HomePage(_: { shops: Shop[] }) {
         <img className="home-logo" src="/iekei-angya-logo.png" alt="家系行脚" />
         <p className="home-title">家系ラーメンを探す</p>
         <div className="home-action-frame">
-          <div className="search-box home-search-box">
-          <input
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="店名 / 住所 / 最寄り駅で検索"
-          />
-          <button className="primary-button" onClick={() => navigate(`/shops?q=${encodeURIComponent(keyword)}`)}>検索</button>
-          </div>
+          <form
+            className="search-box home-search-box"
+            onSubmit={(event) => {
+              event.preventDefault();
+              navigate(`/shops?q=${encodeURIComponent(keyword)}`);
+            }}
+          >
+            <input
+              value={keyword}
+              onChange={(e) => setKeyword(e.target.value)}
+              placeholder="店名 / 住所 / 最寄り駅で検索"
+            />
+            <button type="submit" className="primary-button">検索</button>
+          </form>
           <div className="cta-grid home-cta-grid">
             <Link className="primary-button block" to="/map" state={{ autoLocate: true }}>近くで探す</Link>
             <Link className="secondary-button home-secondary-button block" to="/genealogy">系譜図を見る</Link>
@@ -703,6 +716,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [mapZoom, setMapZoom] = useState(12);
   const [fitToShops, setFitToShops] = useState<boolean>(() => !ids.length);
   const [fitRequestKey, setFitRequestKey] = useState(0);
+  const [suppressViewportMoveKey, setSuppressViewportMoveKey] = useState(0);
   const [userPosition, setUserPosition] = useState<[number, number] | null>(null);
   const [searchMessage, setSearchMessage] = useState('');
   const [isOsmSearching, setIsOsmSearching] = useState(false);
@@ -904,8 +918,32 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setSearchParams(new URLSearchParams(), { replace: true });
   }, [allPublicShops, setSearchParams]);
 
+  const applyMapFilters = useCallback((nextFilters: SearchFilters) => {
+    setDraftFilters(nextFilters);
+    setActiveFilters(nextFilters);
+    setHasMapSearched(true);
+    setIsOsmSearchMode(false);
+    preserveViewOnNextSyncRef.current = true;
+    skipAutoSelectOnNextSyncRef.current = true;
+    selectedShopSourceRef.current = 'other';
+    setSelectedShopId('');
+    setSearchMessage('');
+    setUserPosition(null);
+    setSuppressViewportMoveKey((current) => current + 1);
+
+    const nextVisibleShops = filterShops(shops, { ...nextFilters, q: searchText });
+    setVisibleShops(nextVisibleShops);
+    setFitToShops(false);
+
+    const nextParams = buildSearchParams({ ...nextFilters, q: searchText });
+    nextParams.delete('osm');
+    nextParams.delete('selected');
+    setSearchParams(nextParams, { replace: true });
+  }, [searchText, setSearchParams, shops]);
+
   const applyMapSearch = async (event?: FormEvent) => {
     event?.preventDefault();
+    blurActiveElement();
     const nextFilters: SearchFilters = { ...draftFilters, q: searchText };
     setDraftFilters(nextFilters);
     setActiveFilters(nextFilters);
@@ -985,7 +1023,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         onToggleExpanded={() => setExpanded((current) => !current)}
         onCollapse={() => setExpanded(false)}
         filters={draftFilters}
-        onFiltersChange={setDraftFilters}
+        onFiltersChange={applyMapFilters}
         onSearch={applyMapSearch}
         searching={isOsmSearching}
         message={searchMessage}
@@ -994,7 +1032,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         <div className="map-canvas full-bleed-map with-overlay-card has-map-search-ui">
           <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} selectedShop={selectedShop} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
+            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
@@ -1189,7 +1227,7 @@ const currentLocationIcon = L.divIcon({
   iconAnchor: [9, 9]
 });
 
-function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, selectedShop, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; selectedShop: Shop | null; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
+function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, suppressMoveKey, selectedShop, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; suppressMoveKey: number; selectedShop: Shop | null; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
   const map = useMap();
   const initializedRef = useRef(false);
   const prevCenterRef = useRef<string>('');
@@ -1197,6 +1235,7 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
   const prevFitToShopsRef = useRef<boolean>(fitToShops);
   const prevShopIdsRef = useRef<string>('');
   const prevFitRequestKeyRef = useRef<number>(fitRequestKey);
+  const prevSuppressMoveKeyRef = useRef<number>(suppressMoveKey);
 
   useEffect(() => {
     const syncSnapshot = () => {
@@ -1240,6 +1279,20 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
     const centerKey = `${center[0].toFixed(6)},${center[1].toFixed(6)}`;
     const zoomValue = targetZoom ?? map.getZoom();
     const shopIdsKey = shops.map((shop) => shop.id).join(',');
+    const shouldSuppressMove = prevSuppressMoveKeyRef.current !== suppressMoveKey;
+
+    if (shouldSuppressMove) {
+      prevFitToShopsRef.current = fitToShops;
+      prevShopIdsRef.current = shopIdsKey;
+      prevCenterRef.current = centerKey;
+      prevZoomRef.current = zoomValue;
+      prevFitRequestKeyRef.current = fitRequestKey;
+      prevSuppressMoveKeyRef.current = suppressMoveKey;
+      initializedRef.current = true;
+      return;
+    }
+
+    prevSuppressMoveKeyRef.current = suppressMoveKey;
 
     if (fitToShops && shops.length) {
       const shouldRefit = !initializedRef.current || !prevFitToShopsRef.current || prevShopIdsRef.current !== shopIdsKey || prevFitRequestKeyRef.current !== fitRequestKey;
@@ -1252,7 +1305,17 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
 
       if (shouldRefit) {
         const bounds = L.latLngBounds(shops.map((shop) => [shop.lat, shop.lng] as [number, number]));
-        map.fitBounds(bounds, { padding: [36, 36], animate: true, maxZoom: shops.length === 1 ? 15 : 13 });
+        const mapRect = map.getContainer().getBoundingClientRect();
+        const searchRect = document.querySelector('.map-search-shell')?.getBoundingClientRect();
+        const navRect = document.querySelector('.map-bottom-nav')?.getBoundingClientRect();
+        const topPadding = Math.max(36, ((searchRect?.bottom ?? mapRect.top) - mapRect.top) + 24);
+        const bottomPadding = Math.max(36, (mapRect.bottom - (navRect?.top ?? mapRect.bottom)) + 24);
+        map.fitBounds(bounds, {
+          paddingTopLeft: [36, topPadding],
+          paddingBottomRight: [36, bottomPadding],
+          animate: true,
+          maxZoom: shops.length === 1 ? 15 : 13,
+        });
       }
       return;
     }
@@ -1268,7 +1331,7 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
     if (shouldMove) {
       map.setView(center, zoomValue, { animate: true });
     }
-  }, [center, fitRequestKey, fitToShops, map, selectedShop, shops, targetZoom]);
+  }, [center, fitRequestKey, fitToShops, map, selectedShop, shops, suppressMoveKey, targetZoom]);
   return null;
 }
 
@@ -2114,6 +2177,11 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
                 hasAppliedInitialFocusRef.current = false;
                 searchAutofocusKeyRef.current = '';
                 setHighlightedNodeId(null);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  blurActiveElement();
+                }
               }}
               className="full-input genealogy-search-input"
               placeholder="店名・ノード名で検索"
