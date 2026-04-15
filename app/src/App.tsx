@@ -154,7 +154,7 @@ function buildGenealogyGraph(shops: Shop[], activeTag: Tag): GenealogyGraph {
       depth: 0,
       accent: getGenealogyAccent(representative.tag),
       link: isMulti
-        ? { kind: 'list', to: `/shops?nodoId=${encodeURIComponent(nodeId)}` }
+        ? { kind: 'list', to: `/shops?nodoId=${encodeURIComponent(nodeId)}&q=${encodeURIComponent(getNodeDisplayName(representative))}` }
         : { kind: 'shop', to: `/shops/${representative.id}` },
       shopIds: displayShops.map((shop) => shop.id),
       shopCount: displayShops.length,
@@ -1341,7 +1341,9 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
   const shop = shops.find((item) => item.id === shopId) ?? null;
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
   const backTo = locationState?.backTo ?? '/shops';
-  const mapLink = shop ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}` : '/map';
+  const mapLink = shop
+    ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}&q=${encodeURIComponent(getNodeDisplayName(shop))}`
+    : '/map';
   const detailUrl = shop ? `/shops/${shop.id}` : '/shops';
   const genealogyLink = shop ? buildGenealogyUrl({ tag: shop.tag, focusNodeId: shop.nodoId || shop.id, zoom: 1 }) : '/genealogy';
   if (!shop) return <main className="page"><Header title="店舗詳細" backTo={backTo} /><p>店舗が見つかりませんでした。</p></main>;
