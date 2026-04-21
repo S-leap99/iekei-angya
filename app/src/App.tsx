@@ -1187,7 +1187,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         <div className="map-canvas full-bleed-map with-overlay-card has-map-search-ui">
           <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} selectionDisplayMode={selectionDisplayMode} onMapReady={(mapInstance) => { leafletMapRef.current = mapInstance; }} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
+            <MapViewportController center={mapCenter} targetZoom={mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} selectionDisplayMode={selectionDisplayMode} onMapReady={(mapInstance) => { leafletMapRef.current = mapInstance; }} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
