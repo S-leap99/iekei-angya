@@ -338,6 +338,7 @@ type SearchFilters = {
 
 type MapEntrySource = 'home' | 'searchResults' | 'detail';
 type MapViewSnapshot = { center: [number, number]; zoom: number };
+type MapSelectionDisplayMode = 'preserve' | 'centered';
 
 type OsmSearchResult = {
   name: string;
@@ -392,6 +393,59 @@ function buildSearchUrl(filters: SearchFilters) {
   return `/shops${query ? `?${query}` : ''}`;
 }
 
+function readMapView(searchParams: URLSearchParams): MapViewSnapshot | null {
+  const lat = Number(searchParams.get('lat'));
+  const lng = Number(searchParams.get('lng'));
+  const zoom = Number(searchParams.get('z'));
+  if (!Number.isFinite(lat) || !Number.isFinite(lng) || !Number.isFinite(zoom)) return null;
+  return {
+    center: [lat, lng],
+    zoom: clamp(zoom, 3, 18),
+  };
+}
+
+function writeMapView(searchParams: URLSearchParams, snapshot: MapViewSnapshot) {
+  searchParams.set('lat', String(Number(snapshot.center[0].toFixed(6))));
+  searchParams.set('lng', String(Number(snapshot.center[1].toFixed(6))));
+  searchParams.set('z', String(Number(snapshot.zoom.toFixed(2))));
+}
+
+function readSelectionDisplayMode(searchParams: URLSearchParams): MapSelectionDisplayMode {
+  return searchParams.get('selmode') === 'centered' ? 'centered' : 'preserve';
+}
+
+function writeSelectionDisplayMode(searchParams: URLSearchParams, mode: MapSelectionDisplayMode | null) {
+  if (!mode) {
+    searchParams.delete('selmode');
+    return;
+  }
+  searchParams.set('selmode', mode);
+}
+
+function createMapParams({
+  filters,
+  ids,
+  selectedShopId,
+  isOsmSearchMode,
+  view,
+  selectionDisplayMode,
+}: {
+  filters: SearchFilters;
+  ids?: string[];
+  selectedShopId?: string;
+  isOsmSearchMode?: boolean;
+  view?: MapViewSnapshot | null;
+  selectionDisplayMode?: MapSelectionDisplayMode | null;
+}) {
+  const params = buildSearchParams(filters);
+  if (ids?.length) params.set('ids', ids.join(','));
+  if (selectedShopId) params.set('selected', selectedShopId);
+  if (isOsmSearchMode) params.set('osm', '1');
+  if (view) writeMapView(params, view);
+  if (selectionDisplayMode) writeSelectionDisplayMode(params, selectionDisplayMode);
+  return params;
+}
+
 function createEmptySearchFilters(): SearchFilters {
   return { q: '', origin: '', tag: '', parking: null, nodoId: '' };
 }
@@ -410,8 +464,9 @@ function navigateBack(
   navigate: ReturnType<typeof useNavigate>,
   fallbackTo = '/',
   fallbackState?: Record<string, unknown>,
+  options?: { preferExplicitTarget?: boolean },
 ) {
-  if (canUseBrowserBack()) {
+  if (!options?.preferExplicitTarget && canUseBrowserBack()) {
     navigate(-1);
     return;
   }
@@ -555,7 +610,7 @@ function AdminRoute({ children }: { children: ReactNode }) {
   return children;
 }
 
-function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る', className = '', hideTitle = false }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string; className?: string; hideTitle?: boolean }) {
+function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る', className = '', hideTitle = false, preferExplicitBackTarget = false }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string; className?: string; hideTitle?: boolean; preferExplicitBackTarget?: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
@@ -569,7 +624,7 @@ function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel 
           <button
             type="button"
             className="back-link back-link-button"
-            onClick={() => navigateBack(navigate, resolvedBackTo, resolvedBackState)}
+            onClick={() => navigateBack(navigate, resolvedBackTo, resolvedBackState, { preferExplicitTarget: preferExplicitBackTarget && Boolean(backTo || locationState?.backTo) })}
           >
             {backLabel}
           </button>
@@ -646,6 +701,18 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
 
   const currentSearchUrl = buildSearchUrl(filters);
   const mapLink = `/map${(() => {
+    if (filtered.length === 1) {
+      const params = createMapParams({
+        filters,
+        ids: [filtered[0].id],
+        selectedShopId: filtered[0].id,
+        isOsmSearchMode: false,
+        selectionDisplayMode: 'centered',
+      });
+      const query = params.toString();
+      return query ? `?${query}` : '';
+    }
+
     const query = buildSearchParams(filters).toString();
     return query ? `?${query}` : '';
   })()}`;
@@ -701,19 +768,22 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const ids = useMemo(() => (searchParams.get('ids') ?? '').split(',').filter(Boolean), [searchParams]);
   const initialSelected = searchParams.get('selected') ?? '';
   const initialOsmMode = searchParams.get('osm') === '1';
+  const initialMapView = useMemo(() => readMapView(searchParams), [searchParams]);
+  const initialSelectionDisplayMode = useMemo(() => readSelectionDisplayMode(searchParams), [searchParams]);
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown>; autoLocate?: boolean; entrySource?: MapEntrySource } | null) ?? null;
   const initialEntrySource: MapEntrySource = locationState?.entrySource ?? 'home';
   const [entrySource, setEntrySource] = useState<MapEntrySource>(initialEntrySource);
   const [hasMapSearched, setHasMapSearched] = useState(false);
   const [selectedShopId, setSelectedShopId] = useState(initialSelected);
+  const [selectionDisplayMode, setSelectionDisplayMode] = useState<MapSelectionDisplayMode>(initialSelectionDisplayMode);
   const [isOsmSearchMode, setIsOsmSearchMode] = useState(initialOsmMode);
   const [searchText, setSearchText] = useState(initialFilters.q);
   const [activeFilters, setActiveFilters] = useState<SearchFilters>(initialFilters);
   const [draftFilters, setDraftFilters] = useState<SearchFilters>(initialFilters);
   const [expanded, setExpanded] = useState(initialEntrySource === 'searchResults' && !!(initialFilters.q || initialFilters.origin || initialFilters.tag || initialFilters.parking !== null));
   const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)) : filterShops(shops, initialFilters));
-  const [mapCenter, setMapCenter] = useState<[number, number]>(defaultCenter);
-  const [mapZoom, setMapZoom] = useState(12);
+  const [mapCenter, setMapCenter] = useState<[number, number]>(initialMapView?.center ?? defaultCenter);
+  const [mapZoom, setMapZoom] = useState(initialMapView?.zoom ?? 12);
   const [fitToShops, setFitToShops] = useState<boolean>(() => !ids.length);
   const [fitRequestKey, setFitRequestKey] = useState(0);
   const [suppressViewportMoveKey, setSuppressViewportMoveKey] = useState(0);
@@ -738,12 +808,17 @@ function MapPage({ shops }: { shops: Shop[] }) {
   useEffect(() => {
     selectedShopSourceRef.current = 'other';
     setSelectedShopId(initialSelected);
-  }, [initialSelected]);
+    setSelectionDisplayMode(initialSelectionDisplayMode);
+  }, [initialSelected, initialSelectionDisplayMode]);
 
   useEffect(() => {
     setSearchText(initialFilters.q);
     setActiveFilters(initialFilters);
     setDraftFilters(initialFilters);
+    if (initialMapView) {
+      setMapCenter(initialMapView.center);
+      setMapZoom(initialMapView.zoom);
+    }
     if (ids.length) {
       const nextVisible = shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop));
       setVisibleShops(nextVisible);
@@ -762,10 +837,11 @@ function MapPage({ shops }: { shops: Shop[] }) {
         preserveViewOnNextSyncRef.current = false;
       }
       const hasInitialFilters = hasSearchFilters(initialFilters);
+      const hasInitialSelection = Boolean(initialSelected);
       const shouldAutoSelectSingle = !isOsmSearchMode && hasInitialFilters && filteredShops.length === 1 && !skipAutoSelectOnNextSyncRef.current;
       const shouldFitAll = shouldPreserveView
         ? false
-        : (isOsmSearchMode ? false : (hasInitialFilters ? filteredShops.length > 1 : selectedShopId ? false : !hasMapSearched));
+        : (isOsmSearchMode ? false : (hasInitialFilters ? (!hasInitialSelection && filteredShops.length > 1) : hasInitialSelection ? false : !hasMapSearched));
       setFitToShops(shouldFitAll);
       if (skipAutoSelectOnNextSyncRef.current) {
         skipAutoSelectOnNextSyncRef.current = false;
@@ -776,7 +852,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
       }
     }
     setSearchMessage('');
-  }, [allPublicShops, hasMapSearched, ids, initialFilters, isOsmSearchMode, selectedShopId, shops]);
+  }, [allPublicShops, hasMapSearched, ids, initialFilters, initialMapView, initialSelected, isOsmSearchMode, shops]);
 
   useEffect(() => {
     if (selectedShopId && !visibleShops.some((shop) => shop.id === selectedShopId)) {
@@ -794,23 +870,42 @@ function MapPage({ shops }: { shops: Shop[] }) {
   }, [searchMessage]);
 
   const currentMapUrl = useMemo(() => {
-    const params = hasMapSearched ? buildSearchParams(activeFilters) : new URLSearchParams(searchParams);
-    if (isOsmSearchMode) params.set('osm', '1');
-    else params.delete('osm');
-    if (selectedShopId) params.set('selected', selectedShopId);
-    else params.delete('selected');
+    const params = createMapParams({
+      filters: hasMapSearched ? activeFilters : readSearchFilters(searchParams),
+      ids,
+      selectedShopId,
+      isOsmSearchMode,
+      view: { center: mapCenter, zoom: mapZoom },
+      selectionDisplayMode: selectedShopId ? selectionDisplayMode : null,
+    });
     const query = params.toString();
     return `/map${query ? `?${query}` : ''}`;
-  }, [activeFilters, hasMapSearched, isOsmSearchMode, searchParams, selectedShopId]);
+  }, [activeFilters, hasMapSearched, ids, isOsmSearchMode, mapCenter, mapZoom, searchParams, selectedShopId, selectionDisplayMode]);
+
+  const buildMapUrlFromSnapshot = useCallback((snapshot: MapViewSnapshot, nextSelectedShopId?: string | null, nextSelectionDisplayMode?: MapSelectionDisplayMode | null) => {
+    const params = createMapParams({
+      filters: hasMapSearched ? activeFilters : readSearchFilters(searchParams),
+      ids,
+      selectedShopId: nextSelectedShopId ?? undefined,
+      isOsmSearchMode,
+      view: snapshot,
+      selectionDisplayMode: nextSelectedShopId ? (nextSelectionDisplayMode ?? selectionDisplayMode) : null,
+    });
+    const query = params.toString();
+    return `/map${query ? `?${query}` : ''}`;
+  }, [activeFilters, hasMapSearched, ids, isOsmSearchMode, searchParams, selectionDisplayMode]);
 
   const mapReturnUrl = useMemo(() => {
-    const params = hasMapSearched ? buildSearchParams(activeFilters) : new URLSearchParams(searchParams);
-    if (isOsmSearchMode) params.set('osm', '1');
-    else params.delete('osm');
-    params.delete('selected');
+    const params = createMapParams({
+      filters: hasMapSearched ? activeFilters : readSearchFilters(searchParams),
+      ids,
+      isOsmSearchMode,
+      view: { center: mapCenter, zoom: mapZoom },
+      selectionDisplayMode: null,
+    });
     const query = params.toString();
     return `/map${query ? `?${query}` : ''}`;
-  }, [activeFilters, hasMapSearched, isOsmSearchMode, searchParams]);
+  }, [activeFilters, hasMapSearched, ids, isOsmSearchMode, mapCenter, mapZoom, searchParams]);
 
   const backTarget = entrySource === 'detail'
     ? (locationState?.backTo ?? '/')
@@ -833,6 +928,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         setFitToShops(false);
         selectedShopSourceRef.current = 'other';
         setSelectedShopId('');
+        setSelectionDisplayMode('preserve');
         setSearchMessage('');
       },
       undefined,
@@ -877,9 +973,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
 
     selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
-
-    const nextParams = new URLSearchParams(searchParams);
-    nextParams.delete('selected');
+    setSelectionDisplayMode('preserve');
 
     if (!hadSubsetFilter || !hadMultipleFilteredShops) {
       preserveViewOnNextSyncRef.current = true;
@@ -888,15 +982,26 @@ function MapPage({ shops }: { shops: Shop[] }) {
       setFitToShops(false);
       setMapCenter(currentView.center);
       setMapZoom(currentView.zoom);
-      nextParams.delete('ids');
-      setSearchParams(nextParams, { replace: true });
+      setSearchParams(createMapParams({
+        filters: createEmptySearchFilters(),
+        isOsmSearchMode: false,
+        view: currentView,
+      }), { replace: true });
       return;
     }
 
-    setFitToShops(true);
-    setFitRequestKey((current) => current + 1);
-    setSearchParams(nextParams, { replace: true });
-  }, [activeFilters, allPublicShops, ids.length, isOsmSearchMode, searchParams, setSearchParams, visibleShops.length]);
+    preserveViewOnNextSyncRef.current = true;
+    skipAutoSelectOnNextSyncRef.current = true;
+    setFitToShops(false);
+    setMapCenter(currentView.center);
+    setMapZoom(currentView.zoom);
+    setSearchParams(createMapParams({
+      filters: activeFilters,
+      ids,
+      isOsmSearchMode,
+      view: currentView,
+    }), { replace: true });
+  }, [activeFilters, allPublicShops, ids, isOsmSearchMode, setSearchParams, visibleShops.length]);
 
   const handleClearMapSearch = useCallback(() => {
     const clearedFilters = createEmptySearchFilters();
@@ -909,13 +1014,14 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setIsOsmSearchMode(false);
     selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
+    setSelectionDisplayMode('preserve');
     setVisibleShops(allPublicShops);
     setFitToShops(false);
     setUserPosition(null);
     setSearchMessage('');
     setMapCenter(currentView.center);
     setMapZoom(currentView.zoom);
-    setSearchParams(new URLSearchParams(), { replace: true });
+    setSearchParams(createMapParams({ filters: clearedFilters, view: currentView }), { replace: true });
   }, [allPublicShops, setSearchParams]);
 
   const applyMapFilters = useCallback((nextFilters: SearchFilters) => {
@@ -927,6 +1033,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     skipAutoSelectOnNextSyncRef.current = true;
     selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
+    setSelectionDisplayMode('preserve');
     setSearchMessage('');
     setUserPosition(null);
     setSuppressViewportMoveKey((current) => current + 1);
@@ -935,7 +1042,11 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setVisibleShops(nextVisibleShops);
     setFitToShops(false);
 
-    const nextParams = buildSearchParams({ ...nextFilters, q: searchText });
+    const nextParams = createMapParams({
+      filters: { ...nextFilters, q: searchText },
+      view: mapViewRef.current,
+      selectionDisplayMode: null,
+    });
     nextParams.delete('osm');
     nextParams.delete('selected');
     setSearchParams(nextParams, { replace: true });
@@ -951,20 +1062,29 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setIsOsmSearchMode(false);
     selectedShopSourceRef.current = 'other';
     setSelectedShopId('');
+    setSelectionDisplayMode('preserve');
     setSearchMessage('');
     setUserPosition(null);
 
     const nextVisibleShops = filterShops(shops, nextFilters);
     setVisibleShops(nextVisibleShops);
 
-    const nextParams = buildSearchParams(nextFilters);
+    const currentView = mapViewRef.current;
+    const nextParams = createMapParams({ filters: nextFilters, view: currentView });
     nextParams.delete('osm');
     if (nextVisibleShops.length === 1) {
       nextParams.set('selected', nextVisibleShops[0].id);
+      writeSelectionDisplayMode(nextParams, 'centered');
       selectedShopSourceRef.current = 'other';
       setSelectedShopId(nextVisibleShops[0].id);
+      setSelectionDisplayMode('centered');
+      setMapCenter([nextVisibleShops[0].lat, nextVisibleShops[0].lng]);
+      setMapZoom(Math.max(currentView.zoom, 15));
+      writeMapView(nextParams, { center: [nextVisibleShops[0].lat, nextVisibleShops[0].lng], zoom: Math.max(currentView.zoom, 15) });
       setFitToShops(false);
     } else {
+      writeSelectionDisplayMode(nextParams, null);
+      setSelectionDisplayMode('preserve');
       setFitToShops(nextVisibleShops.length > 1);
     }
     setSearchParams(nextParams, { replace: true });
@@ -979,6 +1099,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
       setFitToShops(false);
       setMapCenter(defaultCenter);
       setMapZoom(12);
+      setSearchParams(createMapParams({ filters: nextFilters, view: { center: defaultCenter, zoom: 12 } }), { replace: true });
       return;
     }
 
@@ -1002,7 +1123,9 @@ function MapPage({ shops }: { shops: Shop[] }) {
       setMapZoom(15);
       setFitToShops(false);
       setIsOsmSearchMode(true);
+      writeMapView(nextParams, { center: result.center, zoom: 15 });
       nextParams.set('osm', '1');
+      writeSelectionDisplayMode(nextParams, null);
       setSearchParams(nextParams, { replace: true });
     } catch (err) {
       setSearchMessage(err instanceof Error ? err.message : '地点検索に失敗しました。');
@@ -1032,7 +1155,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         <div className="map-canvas full-bleed-map with-overlay-card has-map-search-ui">
           <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
+            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} selectionDisplayMode={selectionDisplayMode} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
@@ -1042,19 +1165,29 @@ function MapPage({ shops }: { shops: Shop[] }) {
                   icon={createShopMarkerIcon(selected)}
                   eventHandlers={{
                     click: () => {
-                      const nextParams = new URLSearchParams(searchParams);
+                      const currentView = mapViewRef.current;
+                      const nextParams = createMapParams({
+                        filters: activeFilters,
+                        ids,
+                        isOsmSearchMode,
+                        view: currentView,
+                      });
 
                       if (selectedShopId === shop.id) {
                         selectedShopSourceRef.current = 'other';
                         setSelectedShopId('');
+                        setSelectionDisplayMode('preserve');
                         nextParams.delete('selected');
+                        writeSelectionDisplayMode(nextParams, null);
                         setSearchParams(nextParams, { replace: true });
                         return;
                       }
 
                       selectedShopSourceRef.current = 'mapPin';
                       setSelectedShopId(shop.id);
+                      setSelectionDisplayMode('preserve');
                       nextParams.set('selected', shop.id);
+                      writeSelectionDisplayMode(nextParams, 'preserve');
                       setSearchParams(nextParams, { replace: true });
                     }
                   }}
@@ -1069,7 +1202,12 @@ function MapPage({ shops }: { shops: Shop[] }) {
           {selectedShop ? (
             <div className="map-overlay-card">
               <button type="button" className="map-card-close-button" aria-label="店舗カードを閉じる" onClick={handleCloseCard}>×</button>
-              <ShopCard shop={selectedShop} compact backTo={currentMapUrl} backState={{ backTo: backTarget, backState, entrySource }} />
+              <ShopCard
+                shop={selectedShop}
+                compact
+                backTo={buildMapUrlFromSnapshot(mapViewRef.current, selectedShop.id, selectionDisplayMode)}
+                backState={{ backTo: backTarget, backState, entrySource }}
+              />
             </div>
           ) : null}
         </div>
@@ -1227,7 +1365,7 @@ const currentLocationIcon = L.divIcon({
   iconAnchor: [9, 9]
 });
 
-function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, suppressMoveKey, selectedShop, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; suppressMoveKey: number; selectedShop: Shop | null; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
+function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, suppressMoveKey, selectedShop, selectionDisplayMode, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; suppressMoveKey: number; selectedShop: Shop | null; selectionDisplayMode: MapSelectionDisplayMode; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
   const map = useMap();
   const initializedRef = useRef(false);
   const prevCenterRef = useRef<string>('');
@@ -1244,17 +1382,21 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
     };
 
     syncSnapshot();
+    map.on('move', syncSnapshot);
+    map.on('zoom', syncSnapshot);
     map.on('moveend', syncSnapshot);
     map.on('zoomend', syncSnapshot);
 
     return () => {
+      map.off('move', syncSnapshot);
+      map.off('zoom', syncSnapshot);
       map.off('moveend', syncSnapshot);
       map.off('zoomend', syncSnapshot);
     };
   }, [map, onViewChange]);
 
   useEffect(() => {
-    if (selectedShop) {
+    if (selectedShop && selectionDisplayMode === 'centered') {
       const nextZoom = Math.max(map.getZoom(), 15);
       const mapRect = map.getContainer().getBoundingClientRect();
       const searchRect = document.querySelector('.map-search-shell')?.getBoundingClientRect();
@@ -1331,7 +1473,7 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
     if (shouldMove) {
       map.setView(center, zoomValue, { animate: true });
     }
-  }, [center, fitRequestKey, fitToShops, map, selectedShop, shops, suppressMoveKey, targetZoom]);
+  }, [center, fitRequestKey, fitToShops, map, selectedShop, selectionDisplayMode, shops, suppressMoveKey, targetZoom]);
   return null;
 }
 
@@ -1342,14 +1484,14 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
   const backTo = locationState?.backTo ?? '/shops';
   const mapLink = shop
-    ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}&q=${encodeURIComponent(getNodeDisplayName(shop))}`
+    ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}&q=${encodeURIComponent(getNodeDisplayName(shop))}&selmode=centered`
     : '/map';
   const detailUrl = shop ? `/shops/${shop.id}` : '/shops';
   const genealogyLink = shop ? buildGenealogyUrl({ tag: shop.tag, focusNodeId: shop.nodoId || shop.id, zoom: 1 }) : '/genealogy';
-  if (!shop) return <main className="page"><Header title="店舗詳細" backTo={backTo} /><p>店舗が見つかりませんでした。</p></main>;
+  if (!shop) return <main className="page"><Header title="店舗詳細" backTo={backTo} preferExplicitBackTarget /><p>店舗が見つかりませんでした。</p></main>;
   return (
     <main className="page detail-page">
-      <Header title="店舗詳細" backTo={backTo} />
+      <Header title="店舗詳細" backTo={backTo} preferExplicitBackTarget />
       <section className="detail-hero-carousel" aria-label="店舗画像">
         <div className="detail-hero-track">
           {getDetailHeroImages(shop).map((image, index) => {
