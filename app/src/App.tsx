@@ -454,6 +454,25 @@ function hasSearchFilters(filters: SearchFilters) {
   return Boolean(filters.q.trim() || filters.origin.trim() || filters.tag || filters.parking !== null || filters.nodoId);
 }
 
+function shouldFitMapOnInitialLoad({
+  ids,
+  filters,
+  isOsmSearchMode,
+  initialSelectedShopId,
+}: {
+  ids: string[];
+  filters: SearchFilters;
+  isOsmSearchMode: boolean;
+  initialSelectedShopId?: string;
+}) {
+  if (isOsmSearchMode) return false;
+  if (initialSelectedShopId) return false;
+  if (ids.length > 1) return true;
+  if (ids.length === 1) return false;
+  if (hasSearchFilters(filters)) return true;
+  return true;
+}
+
 function canUseBrowserBack() {
   if (typeof window === 'undefined') return false;
   const historyState = window.history.state as { idx?: number } | null;
@@ -784,14 +803,15 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)) : filterShops(shops, initialFilters));
   const [mapCenter, setMapCenter] = useState<[number, number]>(initialMapView?.center ?? defaultCenter);
   const [mapZoom, setMapZoom] = useState(initialMapView?.zoom ?? 12);
-  const [fitToShops, setFitToShops] = useState<boolean>(() => !ids.length);
+  const [fitToShops, setFitToShops] = useState<boolean>(() => shouldFitMapOnInitialLoad({ ids, filters: initialFilters, isOsmSearchMode: initialOsmMode, initialSelectedShopId: initialSelected }));
   const [fitRequestKey, setFitRequestKey] = useState(0);
   const [suppressViewportMoveKey, setSuppressViewportMoveKey] = useState(0);
   const [userPosition, setUserPosition] = useState<[number, number] | null>(null);
   const [searchMessage, setSearchMessage] = useState('');
   const [isOsmSearching, setIsOsmSearching] = useState(false);
   const lastOsmRequestAtRef = useRef(0);
-  const mapViewRef = useRef<MapViewSnapshot>({ center: defaultCenter, zoom: 12 });
+  const mapViewRef = useRef<MapViewSnapshot>(initialMapView ?? { center: defaultCenter, zoom: 12 });
+  const leafletMapRef = useRef<L.Map | null>(null);
   const preserveViewOnNextSyncRef = useRef(false);
   const skipAutoSelectOnNextSyncRef = useRef(false);
   const selectedShopSourceRef = useRef<'mapPin' | 'other'>('other');
@@ -964,8 +984,20 @@ function MapPage({ shops }: { shops: Shop[] }) {
 
   const hasActiveMapFilter = hasSearchFilters(activeFilters) || ids.length > 0;
 
+  const getLatestMapSnapshot = useCallback((): MapViewSnapshot => {
+    const map = leafletMapRef.current;
+    if (!map) return mapViewRef.current;
+    const currentCenter = map.getCenter();
+    const snapshot = {
+      center: [currentCenter.lat, currentCenter.lng] as [number, number],
+      zoom: map.getZoom(),
+    };
+    mapViewRef.current = snapshot;
+    return snapshot;
+  }, []);
+
   const handleCloseCard = useCallback(() => {
-    const currentView = mapViewRef.current;
+    const currentView = getLatestMapSnapshot();
     const hadIdFilter = ids.length > 0;
     const hadSearchFilter = hasSearchFilters(activeFilters) && !isOsmSearchMode;
     const hadSubsetFilter = hadIdFilter || hadSearchFilter;
@@ -1005,7 +1037,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
 
   const handleClearMapSearch = useCallback(() => {
     const clearedFilters = createEmptySearchFilters();
-    const currentView = mapViewRef.current;
+    const currentView = getLatestMapSnapshot();
     preserveViewOnNextSyncRef.current = true;
     setSearchText('');
     setDraftFilters(clearedFilters);
@@ -1044,7 +1076,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
 
     const nextParams = createMapParams({
       filters: { ...nextFilters, q: searchText },
-      view: mapViewRef.current,
+      view: getLatestMapSnapshot(),
       selectionDisplayMode: null,
     });
     nextParams.delete('osm');
@@ -1069,7 +1101,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     const nextVisibleShops = filterShops(shops, nextFilters);
     setVisibleShops(nextVisibleShops);
 
-    const currentView = mapViewRef.current;
+    const currentView = getLatestMapSnapshot();
     const nextParams = createMapParams({ filters: nextFilters, view: currentView });
     nextParams.delete('osm');
     if (nextVisibleShops.length === 1) {
@@ -1155,7 +1187,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         <div className="map-canvas full-bleed-map with-overlay-card has-map-search-ui">
           <MapContainer center={mapCenter} zoom={mapZoom} zoomControl={false} scrollWheelZoom touchZoom className="leaflet-map">
             <TileLayer attribution='&copy; OpenStreetMap contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} selectionDisplayMode={selectionDisplayMode} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
+            <MapViewportController center={userPosition ?? mapCenter} targetZoom={userPosition ? mapZoom : mapZoom} shops={visibleShops} fitToShops={fitToShops} fitRequestKey={fitRequestKey} suppressMoveKey={suppressViewportMoveKey} selectedShop={selectedShop} selectionDisplayMode={selectionDisplayMode} onMapReady={(mapInstance) => { leafletMapRef.current = mapInstance; }} onViewChange={(snapshot) => { mapViewRef.current = snapshot; }} />
             {visibleShops.map((shop) => {
               const selected = selectedShopId === shop.id;
               return (
@@ -1165,7 +1197,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
                   icon={createShopMarkerIcon(selected)}
                   eventHandlers={{
                     click: () => {
-                      const currentView = mapViewRef.current;
+                      const currentView = getLatestMapSnapshot();
                       const nextParams = createMapParams({
                         filters: activeFilters,
                         ids,
@@ -1205,7 +1237,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
               <ShopCard
                 shop={selectedShop}
                 compact
-                backTo={buildMapUrlFromSnapshot(mapViewRef.current, selectedShop.id, selectionDisplayMode)}
+                backTo={buildMapUrlFromSnapshot(getLatestMapSnapshot(), selectedShop.id, selectionDisplayMode)}
                 backState={{ backTo: backTarget, backState, entrySource }}
               />
             </div>
@@ -1365,7 +1397,7 @@ const currentLocationIcon = L.divIcon({
   iconAnchor: [9, 9]
 });
 
-function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, suppressMoveKey, selectedShop, selectionDisplayMode, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; suppressMoveKey: number; selectedShop: Shop | null; selectionDisplayMode: MapSelectionDisplayMode; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
+function MapViewportController({ center, targetZoom, shops, fitToShops, fitRequestKey, suppressMoveKey, selectedShop, selectionDisplayMode, onMapReady, onViewChange }: { center: [number, number]; targetZoom?: number; shops: Shop[]; fitToShops: boolean; fitRequestKey: number; suppressMoveKey: number; selectedShop: Shop | null; selectionDisplayMode: MapSelectionDisplayMode; onMapReady?: (map: L.Map) => void; onViewChange?: (snapshot: MapViewSnapshot) => void }) {
   const map = useMap();
   const initializedRef = useRef(false);
   const prevCenterRef = useRef<string>('');
@@ -1374,6 +1406,10 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
   const prevShopIdsRef = useRef<string>('');
   const prevFitRequestKeyRef = useRef<number>(fitRequestKey);
   const prevSuppressMoveKeyRef = useRef<number>(suppressMoveKey);
+
+  useEffect(() => {
+    onMapReady?.(map);
+  }, [map, onMapReady]);
 
   useEffect(() => {
     const syncSnapshot = () => {
