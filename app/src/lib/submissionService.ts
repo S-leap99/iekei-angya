@@ -1,4 +1,5 @@
 import { hasSupabaseEnv, supabase } from './supabase';
+import { compressImageFile } from './shopService';
 import type { Tag } from './types';
 
 export type ShopSubmissionStatus = 'pending' | 'approved' | 'rejected';
@@ -39,6 +40,10 @@ export type UpdateShopSubmissionInput = {
 };
 
 const TABLE_NAME = 'shop_submissions';
+const SUBMISSION_IMAGE_BUCKET = 'review-images';
+const SHOP_IMAGE_TABLE_NAME = 'shop_images';
+const SHOP_IMAGE_BUCKET = 'shop-images';
+const PRIMARY_SHOP_IMAGE_TYPE = 'slot1';
 
 function isReady() {
   return Boolean(hasSupabaseEnv && supabase);
@@ -49,6 +54,11 @@ function cleanOptionalText(value: string | undefined) {
   return trimmed ? trimmed : null;
 }
 
+function buildSubmissionImagePath(userId: string, filename: string) {
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+  return `${userId}/submissions/${Date.now()}-${Math.random().toString(36).slice(2)}-${safeName}`;
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === 'object' && error && 'message' in error) {
@@ -56,6 +66,26 @@ function getErrorMessage(error: unknown, fallback: string) {
     if (typeof message === 'string' && message) return message;
   }
   return fallback;
+}
+
+export async function uploadShopSubmissionImage(userId: string, file: File) {
+  if (!isReady() || !supabase) {
+    throw new Error('画像アップロードはSupabase接続後に利用できます。');
+  }
+
+  const compressed = await compressImageFile(file);
+  const storagePath = buildSubmissionImagePath(userId || 'anonymous', compressed.name);
+  const { error } = await supabase.storage.from(SUBMISSION_IMAGE_BUCKET).upload(storagePath, compressed, {
+    upsert: false,
+    contentType: compressed.type,
+    cacheControl: '3600',
+  });
+  if (error) {
+    throw new Error(getErrorMessage(error, '画像のアップロードに失敗しました。Storage設定と権限を確認してください。'));
+  }
+
+  const { data } = supabase.storage.from(SUBMISSION_IMAGE_BUCKET).getPublicUrl(storagePath);
+  return data.publicUrl;
 }
 
 export async function createNewShopSubmission(input: NewShopSubmissionInput) {
@@ -403,6 +433,97 @@ function buildPartialShopUpdatePayloadFromSubmission(item: ShopSubmission, curre
   return payload;
 }
 
+
+function extractStoragePathFromPublicUrl(publicUrl: string, bucketName: string) {
+  try {
+    const url = new URL(publicUrl);
+    const marker = `/storage/v1/object/public/${bucketName}/`;
+    const index = url.pathname.indexOf(marker);
+    if (index === -1) return '';
+    return decodeURIComponent(url.pathname.slice(index + marker.length));
+  } catch {
+    return '';
+  }
+}
+
+function buildCopiedShopImagePath(shopId: string, publicUrl: string) {
+  const originalPath = extractStoragePathFromPublicUrl(publicUrl, SUBMISSION_IMAGE_BUCKET);
+  const originalName = originalPath.split('/').pop() || 'submission-image.jpg';
+  const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+  return `${shopId}/${PRIMARY_SHOP_IMAGE_TYPE}-${Date.now()}-${safeName}`;
+}
+
+async function copySubmissionImageToShopImageBucket(shopId: string, publicUrl: string) {
+  if (!supabase) throw new Error('Supabase接続が未設定です。');
+
+  const response = await fetch(publicUrl);
+  if (!response.ok) {
+    throw new Error('提供写真の読み込みに失敗しました。画像URLが公開状態か確認してください。');
+  }
+
+  const blob = await response.blob();
+  const storagePath = buildCopiedShopImagePath(shopId, publicUrl);
+  const { error } = await supabase.storage.from(SHOP_IMAGE_BUCKET).upload(storagePath, blob, {
+    upsert: false,
+    cacheControl: '3600',
+    contentType: blob.type || 'image/jpeg',
+  });
+
+  if (error) {
+    throw new Error(getErrorMessage(error, '店舗画像用Storageへの保存に失敗しました。shop-images バケットの権限を確認してください。'));
+  }
+
+  const { data } = supabase.storage.from(SHOP_IMAGE_BUCKET).getPublicUrl(storagePath);
+  return { storagePath, publicUrl: data.publicUrl };
+}
+
+async function upsertPrimaryShopImageFromSubmission(shopId: string | null, imageUrl: string | null | undefined) {
+  if (!shopId || !supabase) return;
+  const cleanedImageUrl = textForShop(imageUrl);
+  if (!cleanedImageUrl) return;
+
+  const { data: currentRows, error: fetchError } = await supabase
+    .from(SHOP_IMAGE_TABLE_NAME)
+    .select('*')
+    .eq('shop_id', shopId)
+    .eq('image_type', PRIMARY_SHOP_IMAGE_TYPE)
+    .limit(1);
+
+  if (fetchError) {
+    throw new Error(getErrorMessage(fetchError, '既存の店舗画像情報の取得に失敗しました。'));
+  }
+
+  const current = (currentRows?.[0] ?? null) as Record<string, unknown> | null;
+  if (String(current?.public_url ?? '').trim() === cleanedImageUrl) return;
+
+  const copied = await copySubmissionImageToShopImageBucket(shopId, cleanedImageUrl);
+  const payload = {
+    shop_id: shopId,
+    image_type: PRIMARY_SHOP_IMAGE_TYPE,
+    storage_path: copied.storagePath,
+    public_url: copied.publicUrl,
+    sort_order: 1,
+    updated_at: new Date().toISOString(),
+  };
+
+  const query = current?.id
+    ? supabase.from(SHOP_IMAGE_TABLE_NAME).update(payload).eq('id', String(current.id))
+    : supabase.from(SHOP_IMAGE_TABLE_NAME).insert(payload);
+
+  const { error: saveError } = await query;
+  if (saveError) {
+    await supabase.storage.from(SHOP_IMAGE_BUCKET).remove([copied.storagePath]);
+    throw new Error(getErrorMessage(saveError, '店舗画像情報の保存に失敗しました。shop_images テーブル設定を確認してください。'));
+  }
+
+  const oldStoragePath = String(current?.storage_path ?? '').trim();
+  const oldPublicUrl = String(current?.public_url ?? '').trim();
+  const oldPathIsShopImage = oldPublicUrl.includes(`/storage/v1/object/public/${SHOP_IMAGE_BUCKET}/`);
+  if (oldStoragePath && oldPathIsShopImage) {
+    await supabase.storage.from(SHOP_IMAGE_BUCKET).remove([oldStoragePath]);
+  }
+}
+
 export async function importApprovedSubmissionToShops(id: string) {
   if (!isReady() || !supabase) throw new Error('Supabase接続が未設定です。');
 
@@ -428,18 +549,22 @@ export async function importApprovedSubmissionToShops(id: string) {
     if (fetchError) throw new Error(getErrorMessage(fetchError, '修正対象店舗の取得に失敗しました。'));
 
     const payload = buildPartialShopUpdatePayloadFromSubmission(submission, currentShop as Record<string, unknown>);
-    if (Object.keys(payload).length === 0) {
+    if (Object.keys(payload).length === 0 && !textForShop(submission.image)) {
       throw new Error('本番DBへ反映する変更項目がありません。');
     }
 
-    const { error } = await supabase.from('shops').update(payload).eq('id', shopId);
-    if (error) throw new Error(getErrorMessage(error, '本番DBへの反映に失敗しました。'));
+    if (Object.keys(payload).length > 0) {
+      const { error } = await supabase.from('shops').update(payload).eq('id', shopId);
+      if (error) throw new Error(getErrorMessage(error, '本番DBへの反映に失敗しました。'));
+    }
   } else {
     const payload = buildShopPayloadFromSubmission(submission);
     const { data, error } = await supabase.from('shops').insert(payload).select('id').single();
     if (error) throw new Error(getErrorMessage(error, '本番DBへの追加に失敗しました。'));
     shopId = String((data as Record<string, unknown>).id ?? '');
   }
+
+  await upsertPrimaryShopImageFromSubmission(shopId, submission.image);
 
   const { error: updateError } = await supabase.from(TABLE_NAME).update({
     imported_shop_id: shopId,

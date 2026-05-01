@@ -7,7 +7,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { defaultShops } from './lib/shopSeeds';
 import { noPhotoDataUrl } from './lib/placeholders';
 import { deleteShopImage, executeCsvImport, getConnectionLabel, getImageBucketName, listShops, previewCsvImport, removeShop, upsertShop, uploadShopImage } from './lib/shopService';
-import { createNewShopSubmission, createUpdateShopSubmission, getShopSubmission, importApprovedSubmissionToShops, listMyShopSubmissions, listShopSubmissions, reviewShopSubmission, updateShopSubmissionDraft } from './lib/submissionService';
+import { createNewShopSubmission, createUpdateShopSubmission, getShopSubmission, importApprovedSubmissionToShops, listMyShopSubmissions, listShopSubmissions, reviewShopSubmission, updateShopSubmissionDraft, uploadShopSubmissionImage } from './lib/submissionService';
 import type { ShopSubmission, ShopSubmissionDraftInput, ShopSubmissionStatus } from './lib/submissionService';
 import { getAdminAuthState, signInAdmin, signOutAdmin } from './lib/authService';
 import { hasSupabaseEnv, supabase } from './lib/supabase';
@@ -2241,7 +2241,7 @@ function PasswordUpdatePage({ member }: { member: ReturnType<typeof useMemberAcc
  function MyPage({ member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
   const myReviewCount = member.reviews.filter((review) => review.userId === member.session.userId || (!member.session.userId && review.nickname === member.session.nickname)).length;
   const savedSummary = `行きたい${member.store.want.length}件・行った${member.store.visited.length}件・お気に入り${member.store.favorite.length}件`;
-  return <RequireMember member={member}><main className="page"><Header title="マイページ" backTo="/" /><section className="hero-card mypage-profile"><span className="eyebrow">プロフィール</span><strong>{member.session.nickname}</strong><Link className="primary-button mypage-profile-edit" to="/mypage/profile">プロフィール編集</Link></section><section className="member-menu-grid section"><MemberMenu to="/mypage/saved" title="保存一覧" desc={savedSummary} /><MemberMenu to="/mypage/history" title="閲覧履歴" desc={`最近見たお店 ${member.store.history.length}件`} /><MemberMenu to="/mypage/reviews" title="投稿したレビュー" desc={`${myReviewCount}件のレビュー`} /><MemberMenu to="/mypage/news" title="お知らせ" desc="運営からの最新情報" /><MemberMenu to="/mypage/submissions" title="提供した店舗情報" desc="承認状況と運営コメントを確認" /><MemberMenu to="/contact" title="問い合わせ" desc="困ったことを運営へ送る" /><MemberMenu to="/shops/new-suggestion" title="新店舗情報提供" desc="未掲載店舗を知らせる" /><MemberMenu to="/withdraw" title="退会" desc="アカウントを削除する" /></section><button className="ghost-button block mypage-logout-button" type="button" onClick={member.logout}>ログアウト</button><BottomNav /></main></RequireMember>;
+  return <RequireMember member={member}><main className="page"><Header title="マイページ" backTo="/" /><section className="hero-card mypage-profile"><span className="eyebrow">プロフィール</span><strong>{member.session.nickname}</strong><span className="mypage-profile-email">{member.session.email || 'メールアドレス未取得'}</span><Link className="primary-button mypage-profile-edit" to="/mypage/profile">プロフィール編集</Link></section><section className="member-menu-grid section"><MemberMenu to="/mypage/saved" title="保存一覧" desc={savedSummary} /><MemberMenu to="/mypage/history" title="閲覧履歴" desc={`最近見たお店 ${member.store.history.length}件`} /><MemberMenu to="/mypage/reviews" title="投稿したレビュー" desc={`${myReviewCount}件のレビュー`} /><MemberMenu to="/mypage/news" title="お知らせ" desc="運営からの最新情報" /><MemberMenu to="/mypage/submissions" title="提供した店舗情報" desc="承認状況と運営コメントを確認" /><MemberMenu to="/contact" title="問い合わせ" desc="困ったことを運営へ送る" /><MemberMenu to="/shops/new-suggestion" title="新店舗情報提供" desc="未掲載店舗を知らせる" /><MemberMenu to="/withdraw" title="退会" desc="アカウントを削除する" /></section><button className="ghost-button block mypage-logout-button" type="button" onClick={member.logout}>ログアウト</button><BottomNav /></main></RequireMember>;
 }
 
 function MemberMenu({ to, title, desc }: { to: string; title: string; desc: string }) { return <Link className="info-card member-menu-card" to={to}><strong>{title}</strong><span>{desc}</span></Link>; }
@@ -2492,6 +2492,7 @@ const defaultNewShopSuggestionForm: NewShopSuggestionFormState = {
 
 function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
   const [form, setForm] = useState<NewShopSuggestionFormState>(defaultNewShopSuggestionForm);
+  const [imageFile, setImageFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const navigate = useNavigate();
@@ -2509,6 +2510,7 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
     try {
       setBusy(true);
       setMessage('');
+      const uploadedImageUrl = imageFile ? await uploadShopSubmissionImage(member.session.userId, imageFile) : '';
       await createNewShopSubmission({
         userId: member.session.userId,
         name: form.name,
@@ -2519,11 +2521,12 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
         holiday: form.holiday,
         parking: form.parking === '' ? null : form.parking === 'true',
         officialUrl: form.officialUrl,
-        image: form.image,
+        image: uploadedImageUrl || form.image,
         origin: form.origin,
         genealogy: form.genealogy,
       });
       setForm(defaultNewShopSuggestionForm);
+      setImageFile(null);
       navigate('/mypage/submissions', { replace: true });
     } catch (err) {
       setMessage(getErrorMessage(err, '送信に失敗しました。時間をおいて再度お試しください。'));
@@ -2546,6 +2549,8 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
           <label>駐車場<select value={form.parking} onChange={(e) => updateForm('parking', e.target.value)}><option value="">不明</option><option value="true">あり</option><option value="false">なし</option></select></label>
           <label>公式URL<input value={form.officialUrl} onChange={(e) => updateForm('officialUrl', e.target.value)} placeholder="https://..." inputMode="url" /></label>
           <label>画像URL<input value={form.image} onChange={(e) => updateForm('image', e.target.value)} placeholder="画像ページやSNS投稿URLなど" inputMode="url" /></label>
+          <label>画像アップロード<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setImageFile(e.target.files?.[0] ?? null)} /></label>
+          {imageFile ? <p className="form-hint">選択中: {imageFile.name}</p> : null}
           <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder="例：吉村家系。わからなければ空欄でOK" /></label>
           <label>系譜<input value={form.genealogy} onChange={(e) => updateForm('genealogy', e.target.value)} placeholder="例：吉村家 → ○○家。わからなければ空欄でOK" /></label>
           {!canSubmit ? <p className="form-hint">店舗名・分類・住所を入力すると送信できます。</p> : null}
@@ -2601,11 +2606,12 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
   const { shopId } = useParams();
   const shop = shops.find((item) => item.id === shopId);
   const [form, setForm] = useState<ShopCorrectionFormState>(defaultShopCorrectionForm);
+  const [imageFile, setImageFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const navigate = useNavigate();
 
-  const canSubmit = Object.values(form).some((value) => value.trim().length > 0);
+  const canSubmit = Object.values(form).some((value) => value.trim().length > 0) || Boolean(imageFile);
 
   const updateForm = (key: keyof ShopCorrectionFormState, value: string) => {
     setForm((current) => ({ ...current, [key]: value }));
@@ -2618,6 +2624,7 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
     try {
       setBusy(true);
       setMessage('');
+      const uploadedImageUrl = imageFile ? await uploadShopSubmissionImage(member.session.userId, imageFile) : '';
       await createUpdateShopSubmission({
         userId: member.session.userId,
         targetShopId: shop.id,
@@ -2632,12 +2639,13 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
         parking: form.parking === '' ? null : form.parking === 'true',
         officialUrl: form.officialUrl,
         officialAccount: form.officialAccount,
-        image: form.image,
+        image: uploadedImageUrl || form.image,
         origin: form.origin,
         genealogy: form.genealogy,
         memo: form.memo,
       });
       setForm(defaultShopCorrectionForm);
+      setImageFile(null);
       navigate('/mypage/submissions', { replace: true });
     } catch (err) {
       setMessage(getErrorMessage(err, '送信に失敗しました。時間をおいて再度お試しください。'));
@@ -2671,6 +2679,8 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
           <label>公式URL<input value={form.officialUrl} onChange={(e) => updateForm('officialUrl', e.target.value)} placeholder={shop.officialUrl || 'https://...'} inputMode="url" /></label>
           <label>公式SNS<input value={form.officialAccount} onChange={(e) => updateForm('officialAccount', e.target.value)} placeholder={shop.officialAccount || 'X / Instagram など'} /></label>
           <label>画像URL<input value={form.image} onChange={(e) => updateForm('image', e.target.value)} placeholder={shop.image || '画像ページやSNS投稿URLなど'} inputMode="url" /></label>
+          <label>画像アップロード<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setImageFile(e.target.files?.[0] ?? null)} /></label>
+          {imageFile ? <p className="form-hint">選択中: {imageFile.name}</p> : null}
           <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder={shop.origin || '例：吉村家系'} /></label>
           <label>系譜<input value={form.genealogy} onChange={(e) => updateForm('genealogy', e.target.value)} placeholder={shop.genealogy || '例：吉村家 → ○○家'} /></label>
           <label>補足<textarea value={form.memo} onChange={(e) => updateForm('memo', e.target.value)} placeholder="根拠URL、補足、気づいたことなど" /></label>

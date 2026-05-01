@@ -1380,6 +1380,7 @@ button { border: 0; cursor: pointer; }
 .member-link-row { display: flex; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--primary); }
 .mypage-profile { display: grid; gap: 8px; }
 .mypage-profile strong { font-size: 22px; }
+.mypage-profile-email { word-break: break-all; }
 .mypage-profile-edit {
   background: var(--primary);
   color: #fff;
