@@ -2458,7 +2458,7 @@ function NewsListPage({ member }: { member: ReturnType<typeof useMemberAccount> 
 
 function NewsDetailPage({ member }: { member: ReturnType<typeof useMemberAccount> }) { const { newsId } = useParams(); const news = member.news.find((item) => item.id === newsId) ?? member.news[0] ?? sampleNews[0]; return <main className="page"><Header title="お知らせ詳細" backTo="/mypage/news" /><section className="hero-card"><p className="eyebrow">{news.date}</p><h2>{news.title}</h2><p className="lead">{news.body}</p></section><BottomNav /></main>; }
 
- function ContactPage({ member, notification }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
+function ContactPage({ member, notification }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
   return <SupportForm member={member} notification={notification} title="問い合わせ" backTo="/mypage" fields={<><label>種別<select name="category"><option>店舗情報について</option><option>アプリの使い方</option><option>その他</option></select></label><label>件名<input name="subject" placeholder="例：表示内容について" /></label><label>内容<textarea name="body" placeholder="困っていることや確認したいことを書いてください" /></label></>} />;
 }
 
@@ -2473,6 +2473,7 @@ type NewShopSuggestionFormState = {
   officialUrl: string;
   origin: string;
   genealogy: string;
+  informationSource: string;
 };
 
 const defaultNewShopSuggestionForm: NewShopSuggestionFormState = {
@@ -2486,6 +2487,7 @@ const defaultNewShopSuggestionForm: NewShopSuggestionFormState = {
   officialUrl: '',
   origin: '',
   genealogy: '',
+  informationSource: '',
 };
 
 function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
@@ -2522,6 +2524,7 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
         image: uploadedImageUrl,
         origin: form.origin,
         genealogy: form.genealogy,
+        informationSource: form.informationSource,
       });
       setForm(defaultNewShopSuggestionForm);
       setImageFile(null);
@@ -2550,6 +2553,7 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
           {imageFile ? <p className="form-hint">選択中: {imageFile.name}</p> : null}
           <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder="例：吉村家系。わからなければ空欄でOK" /></label>
           <label>系譜<input value={form.genealogy} onChange={(e) => updateForm('genealogy', e.target.value)} placeholder="例：吉村家 → ○○家。わからなければ空欄でOK" /></label>
+          <label>情報ソース<textarea value={form.informationSource} onChange={(e) => updateForm('informationSource', e.target.value)} placeholder="例：公式サイト、店舗掲示、SNS投稿など" /></label>
           {!canSubmit ? <p className="form-hint">店舗名・分類・住所を入力すると送信できます。</p> : null}
           <div className="action-row">
             <button className="primary-button block" type="submit" disabled={!canSubmit || busy}>{busy ? '送信中...' : '送信する'}</button>
@@ -2578,6 +2582,7 @@ type ShopCorrectionFormState = {
   origin: string;
   genealogy: string;
   memo: string;
+  informationSource: string;
 };
 
 const defaultShopCorrectionForm: ShopCorrectionFormState = {
@@ -2595,6 +2600,7 @@ const defaultShopCorrectionForm: ShopCorrectionFormState = {
   origin: '',
   genealogy: '',
   memo: '',
+  informationSource: '',
 };
 
 function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
@@ -2638,6 +2644,7 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
         origin: form.origin,
         genealogy: form.genealogy,
         memo: form.memo,
+        informationSource: form.informationSource,
       });
       setForm(defaultShopCorrectionForm);
       setImageFile(null);
@@ -2677,7 +2684,8 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
           {imageFile ? <p className="form-hint">選択中: {imageFile.name}</p> : null}
           <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder={shop.origin || '例：吉村家系'} /></label>
           <label>系譜<input value={form.genealogy} onChange={(e) => updateForm('genealogy', e.target.value)} placeholder={shop.genealogy || '例：吉村家 → ○○家'} /></label>
-          <label>補足<textarea value={form.memo} onChange={(e) => updateForm('memo', e.target.value)} placeholder="根拠URL、補足、気づいたことなど" /></label>
+          <label>情報ソース<textarea value={form.informationSource} onChange={(e) => updateForm('informationSource', e.target.value)} placeholder="例：公式サイト、店舗掲示、SNS投稿など" /></label>
+          <label>補足<textarea value={form.memo} onChange={(e) => updateForm('memo', e.target.value)} placeholder="補足、気づいたことなど" /></label>
           {!canSubmit ? <p className="form-hint">修正したい項目を1つ以上入力すると送信できます。</p> : null}
           <div className="action-row">
             <button className="primary-button block" type="submit" disabled={!canSubmit || busy}>{busy ? '送信中...' : '送信する'}</button>
@@ -2858,6 +2866,7 @@ function AdminSubmissionsPage() {
               <strong>{item.name || '店舗名未入力'}</strong>
               <p>{typeLabel(item.submissionType)} / {statusLabel(item.status)}</p>
               <p>{item.address || '住所未入力'}</p>
+              {item.informationSource ? <p>情報ソース: {item.informationSource}</p> : null}
               <p className="csv-help">投稿日時: {new Date(item.createdAt).toLocaleString('ja-JP')}</p>
             </div>
             <div className="row-actions"><Link className="primary-button small" to={`/admin-8fj3k2-3me77nfcb6c0/submissions/${item.id}`}>確認</Link></div>
@@ -2988,6 +2997,7 @@ function AdminSubmissionDetailPage() {
         <strong>{submission.submissionType === 'update' ? '既存店舗の修正' : '新規店舗提供'}</strong>
         <span>現在の状態: {submission.status}</span>
         {submission.targetShopId ? <span>修正対象店舗ID: {submission.targetShopId}</span> : null}
+        {submission.informationSource ? <span>情報ソース: {submission.informationSource}</span> : null}
         {submission.importedAt ? <span>本番DB反映済み: {new Date(submission.importedAt).toLocaleString('ja-JP')}</span> : null}
         {submission.importedShopId ? <span>反映先店舗ID: {submission.importedShopId}</span> : null}
       </section>

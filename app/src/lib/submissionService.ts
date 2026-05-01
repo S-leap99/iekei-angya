@@ -17,6 +17,7 @@ export type NewShopSubmissionInput = {
   image?: string;
   origin?: string;
   genealogy?: string;
+  informationSource?: string;
 };
 
 export type UpdateShopSubmissionInput = {
@@ -37,6 +38,7 @@ export type UpdateShopSubmissionInput = {
   officialAccount?: string;
   seats?: string;
   memo?: string;
+  informationSource?: string;
 };
 
 const TABLE_NAME = 'shop_submissions';
@@ -52,6 +54,32 @@ function isReady() {
 function cleanOptionalText(value: string | undefined) {
   const trimmed = value?.trim() ?? '';
   return trimmed ? trimmed : null;
+}
+
+const INFORMATION_SOURCE_MEMO_PREFIX = '[information_source]';
+const INFORMATION_SOURCE_MEMO_SUFFIX = '[/information_source]';
+
+function buildMemoWithInformationSource(memo: string | undefined, informationSource: string | undefined) {
+  const cleanedMemo = memo?.trim() ?? '';
+  const cleanedSource = informationSource?.trim() ?? '';
+  if (!cleanedSource) return cleanOptionalText(cleanedMemo);
+  const sourceBlock = `${INFORMATION_SOURCE_MEMO_PREFIX}${cleanedSource}${INFORMATION_SOURCE_MEMO_SUFFIX}`;
+  return cleanedMemo ? `${sourceBlock}\n${cleanedMemo}` : sourceBlock;
+}
+
+function splitMemoAndInformationSource(value: string | null | undefined) {
+  const raw = value ?? '';
+  const start = raw.indexOf(INFORMATION_SOURCE_MEMO_PREFIX);
+  const end = raw.indexOf(INFORMATION_SOURCE_MEMO_SUFFIX);
+  if (start === -1 || end === -1 || end < start) {
+    return { memo: raw, informationSource: '' };
+  }
+
+  const sourceStart = start + INFORMATION_SOURCE_MEMO_PREFIX.length;
+  const source = raw.slice(sourceStart, end).trim();
+  const before = raw.slice(0, start).trim();
+  const after = raw.slice(end + INFORMATION_SOURCE_MEMO_SUFFIX.length).trim();
+  return { memo: [before, after].filter(Boolean).join('\n'), informationSource: source };
 }
 
 function buildSubmissionImagePath(userId: string, filename: string) {
@@ -107,13 +135,15 @@ export async function createNewShopSubmission(input: NewShopSubmissionInput) {
     image: cleanOptionalText(input.image),
     origin: cleanOptionalText(input.origin),
     genealogy: cleanOptionalText(input.genealogy),
+    memo: buildMemoWithInformationSource(undefined, input.informationSource),
     status: 'pending',
   };
 
-  const { error } = await supabase.from(TABLE_NAME).insert(payload);
+  const { data, error } = await supabase.from(TABLE_NAME).insert(payload).select('id').single();
   if (error) {
     throw new Error(getErrorMessage(error, '店舗情報の送信に失敗しました。'));
   }
+  return data.id as string;
 }
 
 
@@ -140,14 +170,15 @@ export async function createUpdateShopSubmission(input: UpdateShopSubmissionInpu
     phone: cleanOptionalText(input.phone),
     official_account: cleanOptionalText(input.officialAccount),
     seats: cleanOptionalText(input.seats),
-    memo: cleanOptionalText(input.memo),
+    memo: buildMemoWithInformationSource(input.memo, input.informationSource),
     status: 'pending',
   };
 
-  const { error } = await supabase.from(TABLE_NAME).insert(payload);
+  const { data, error } = await supabase.from(TABLE_NAME).insert(payload).select('id').single();
   if (error) {
     throw new Error(getErrorMessage(error, '店舗情報の修正提案に失敗しました。'));
   }
+  return data.id as string;
 }
 
 
@@ -172,6 +203,7 @@ export type ShopSubmission = {
   lng: number | null;
   image: string;
   memo: string;
+  informationSource: string;
   origin: string;
   genealogy: string;
   phone: string;
@@ -219,6 +251,7 @@ function nullableNumber(value: number | null | undefined) {
 }
 
 function mapSubmission(row: Record<string, any>): ShopSubmission {
+  const memoInfo = splitMemoAndInformationSource(row.memo);
   return {
     id: row.id,
     userId: row.user_id,
@@ -236,7 +269,8 @@ function mapSubmission(row: Record<string, any>): ShopSubmission {
     lat: row.lat ?? null,
     lng: row.lng ?? null,
     image: row.image ?? '',
-    memo: row.memo ?? '',
+    memo: memoInfo.memo,
+    informationSource: memoInfo.informationSource,
     origin: row.origin ?? '',
     genealogy: row.genealogy ?? '',
     phone: row.phone ?? '',
