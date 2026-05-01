@@ -2471,7 +2471,6 @@ type NewShopSuggestionFormState = {
   holiday: string;
   parking: '' | 'true' | 'false';
   officialUrl: string;
-  image: string;
   origin: string;
   genealogy: string;
 };
@@ -2485,7 +2484,6 @@ const defaultNewShopSuggestionForm: NewShopSuggestionFormState = {
   holiday: '',
   parking: '',
   officialUrl: '',
-  image: '',
   origin: '',
   genealogy: '',
 };
@@ -2521,7 +2519,7 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
         holiday: form.holiday,
         parking: form.parking === '' ? null : form.parking === 'true',
         officialUrl: form.officialUrl,
-        image: uploadedImageUrl || form.image,
+        image: uploadedImageUrl,
         origin: form.origin,
         genealogy: form.genealogy,
       });
@@ -2548,7 +2546,6 @@ function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMember
           <label>定休日<input value={form.holiday} onChange={(e) => updateForm('holiday', e.target.value)} placeholder="例：月曜日" /></label>
           <label>駐車場<select value={form.parking} onChange={(e) => updateForm('parking', e.target.value)}><option value="">不明</option><option value="true">あり</option><option value="false">なし</option></select></label>
           <label>公式URL<input value={form.officialUrl} onChange={(e) => updateForm('officialUrl', e.target.value)} placeholder="https://..." inputMode="url" /></label>
-          <label>画像URL<input value={form.image} onChange={(e) => updateForm('image', e.target.value)} placeholder="画像ページやSNS投稿URLなど" inputMode="url" /></label>
           <label>画像アップロード<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setImageFile(e.target.files?.[0] ?? null)} /></label>
           {imageFile ? <p className="form-hint">選択中: {imageFile.name}</p> : null}
           <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder="例：吉村家系。わからなければ空欄でOK" /></label>
@@ -2578,7 +2575,6 @@ type ShopCorrectionFormState = {
   parking: '' | 'true' | 'false';
   officialUrl: string;
   officialAccount: string;
-  image: string;
   origin: string;
   genealogy: string;
   memo: string;
@@ -2596,7 +2592,6 @@ const defaultShopCorrectionForm: ShopCorrectionFormState = {
   parking: '',
   officialUrl: '',
   officialAccount: '',
-  image: '',
   origin: '',
   genealogy: '',
   memo: '',
@@ -2639,7 +2634,7 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
         parking: form.parking === '' ? null : form.parking === 'true',
         officialUrl: form.officialUrl,
         officialAccount: form.officialAccount,
-        image: uploadedImageUrl || form.image,
+        image: uploadedImageUrl,
         origin: form.origin,
         genealogy: form.genealogy,
         memo: form.memo,
@@ -2678,7 +2673,6 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
           <label>駐車場<select value={form.parking} onChange={(e) => updateForm('parking', e.target.value)}><option value="">変更なし（{shop.parking ? 'あり' : 'なし'}）</option><option value="true">あり</option><option value="false">なし</option></select></label>
           <label>公式URL<input value={form.officialUrl} onChange={(e) => updateForm('officialUrl', e.target.value)} placeholder={shop.officialUrl || 'https://...'} inputMode="url" /></label>
           <label>公式SNS<input value={form.officialAccount} onChange={(e) => updateForm('officialAccount', e.target.value)} placeholder={shop.officialAccount || 'X / Instagram など'} /></label>
-          <label>画像URL<input value={form.image} onChange={(e) => updateForm('image', e.target.value)} placeholder={shop.image || '画像ページやSNS投稿URLなど'} inputMode="url" /></label>
           <label>画像アップロード<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setImageFile(e.target.files?.[0] ?? null)} /></label>
           {imageFile ? <p className="form-hint">選択中: {imageFile.name}</p> : null}
           <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder={shop.origin || '例：吉村家系'} /></label>
