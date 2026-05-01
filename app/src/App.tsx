@@ -7,7 +7,10 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate, useParams, use
 import { defaultShops } from './lib/shopSeeds';
 import { noPhotoDataUrl } from './lib/placeholders';
 import { deleteShopImage, executeCsvImport, getConnectionLabel, getImageBucketName, listShops, previewCsvImport, removeShop, upsertShop, uploadShopImage } from './lib/shopService';
+import { createNewShopSubmission, createUpdateShopSubmission, getShopSubmission, importApprovedSubmissionToShops, listMyShopSubmissions, listShopSubmissions, reviewShopSubmission, updateShopSubmissionDraft } from './lib/submissionService';
+import type { ShopSubmission, ShopSubmissionDraftInput, ShopSubmissionStatus } from './lib/submissionService';
 import { getAdminAuthState, signInAdmin, signOutAdmin } from './lib/authService';
+import { hasSupabaseEnv, supabase } from './lib/supabase';
 import type { CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag } from './lib/types';
 
 const originOptions = ['吉村家系', '本牧家系', '六角家系'];
@@ -334,6 +337,7 @@ type SearchFilters = {
   tag: Tag | '';
   parking: boolean | null;
   nodoId: string;
+  saved: SavedKind | '';
 };
 
 type MapEntrySource = 'home' | 'searchResults' | 'detail';
@@ -366,6 +370,13 @@ function filterShops(shops: Shop[], filters: SearchFilters) {
   });
 }
 
+function filterShopsBySaved(shops: Shop[], filters: SearchFilters, store: MemberStore) {
+  const filtered = filterShops(shops, filters);
+  if (!filters.saved) return filtered;
+  const savedIds = new Set(store[filters.saved]);
+  return filtered.filter((shop) => savedIds.has(shop.id));
+}
+
 function readSearchFilters(searchParams: URLSearchParams): SearchFilters {
   const tag = (searchParams.get('tag') as Tag | null) ?? '';
   const parkingParam = searchParams.get('parking');
@@ -375,6 +386,7 @@ function readSearchFilters(searchParams: URLSearchParams): SearchFilters {
     tag,
     parking: parkingParam === 'true' ? true : parkingParam === 'false' ? false : null,
     nodoId: searchParams.get('nodoId') ?? '',
+    saved: (searchParams.get('saved') as SavedKind | null) ?? '',
   };
 }
 
@@ -385,6 +397,7 @@ function buildSearchParams(filters: SearchFilters) {
   if (filters.tag) next.set('tag', filters.tag);
   if (filters.parking !== null) next.set('parking', String(filters.parking));
   if (filters.nodoId) next.set('nodoId', filters.nodoId);
+  if (filters.saved) next.set('saved', filters.saved);
   return next;
 }
 
@@ -447,11 +460,11 @@ function createMapParams({
 }
 
 function createEmptySearchFilters(): SearchFilters {
-  return { q: '', origin: '', tag: '', parking: null, nodoId: '' };
+  return { q: '', origin: '', tag: '', parking: null, nodoId: '', saved: '' };
 }
 
 function hasSearchFilters(filters: SearchFilters) {
-  return Boolean(filters.q.trim() || filters.origin.trim() || filters.tag || filters.parking !== null || filters.nodoId);
+  return Boolean(filters.q.trim() || filters.origin.trim() || filters.tag || filters.parking !== null || filters.nodoId || filters.saved);
 }
 
 function shouldFitMapOnInitialLoad({
@@ -562,10 +575,409 @@ function renderPhoneLink(phone: string) {
   return <a href={telHref} className="detail-link">{phone}</a>;
 }
 
-function createShopMarkerIcon(selected: boolean) {
+type MemberSession = {
+  loggedIn: boolean;
+  userId: string;
+  email: string;
+  nickname: string;
+};
+
+type SavedKind = 'want' | 'visited' | 'favorite';
+
+type MemberStore = {
+  want: string[];
+  visited: string[];
+  favorite: string[];
+  history: string[];
+};
+
+type MemberReview = {
+  id: string;
+  userId: string;
+  shopId: string;
+  nickname: string;
+  rating: number;
+  comment: string;
+  hasPhoto: boolean;
+  imageUrls: string[];
+};
+
+type MemberNews = {
+  id: string;
+  date: string;
+  title: string;
+  body: string;
+};
+
+const defaultMemberSession: MemberSession = {
+  loggedIn: false,
+  userId: '',
+  email: '',
+  nickname: '家系ビギナー',
+};
+
+const defaultMemberStore: MemberStore = { want: [], visited: [], favorite: [], history: [] };
+
+const savedLabels: Record<SavedKind, string> = {
+  want: '行きたい',
+  visited: '行った',
+  favorite: 'お気に入り',
+};
+
+const savedFilterOptions: Array<{ value: SavedKind; label: string }> = [
+  { value: 'want', label: '行きたい' },
+  { value: 'visited', label: '行った' },
+];
+
+const sampleNews: MemberNews[] = [
+  { id: 'n1', date: '2026.04.21', title: '会員機能を追加しました', body: '行きたい・行った・お気に入り、レビュー投稿、閲覧履歴が使えるようになりました。' },
+  { id: 'n2', date: '2026.04.18', title: '新店舗情報提供の受付を開始しました', body: '未掲載の家系ラーメン店を見つけたら、マイページから運営へお知らせください。' },
+  { id: 'n3', date: '2026.04.12', title: '店舗情報の修正提案に対応しました', body: '営業時間や定休日などの変更情報を、店舗詳細からかんたんに送れるようになりました。' },
+];
+
+const sampleReviews: MemberReview[] = [
+  { id: 'r1', userId: 'sample-1', shopId: '1', nickname: '家系ビギナー', rating: 5, comment: 'スープの厚みがすごく、初めてでも迷わず行けました。', hasPhoto: true, imageUrls: [] },
+  { id: 'r2', userId: 'sample-2', shopId: '2', nickname: '麺かため派', rating: 4, comment: '朝ラーで利用。駅から行きやすく、回転も早かったです。', hasPhoto: false, imageUrls: [] },
+];
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function formatNewsDate(value: string | null | undefined) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 10).replace(/-/g, '.');
+  return date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '.');
+}
+
+function isSupabaseReady() {
+  return Boolean(hasSupabaseEnv && supabase);
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'object' && error && 'message' in error) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message) return message;
+  }
+  return fallback;
+}
+
+async function getCurrentMemberUser() {
+  if (!isSupabaseReady() || !supabase) return null;
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
+  return data.user;
+}
+
+async function loadMemberProfile(userId: string, fallbackNickname = defaultMemberSession.nickname) {
+  if (!supabase) return { nickname: fallbackNickname };
+  const { data, error } = await supabase.from('users_profile').select('nickname,is_deleted').eq('user_id', userId).maybeSingle();
+  if (error) throw new Error(getErrorMessage(error, 'プロフィールの取得に失敗しました。'));
+  if (!data) {
+    await upsertMemberProfile(userId, fallbackNickname);
+    return { nickname: fallbackNickname };
+  }
+  return { nickname: data.is_deleted ? '退会済みユーザー' : (data.nickname || fallbackNickname) };
+}
+
+async function upsertMemberProfile(userId: string, nickname: string) {
+  if (!supabase) return;
+  const { error } = await supabase.from('users_profile').upsert({ user_id: userId, nickname, is_deleted: false }, { onConflict: 'user_id' });
+  if (error) throw new Error(getErrorMessage(error, 'プロフィールの保存に失敗しました。'));
+}
+
+async function loadMemberStore(userId: string): Promise<MemberStore> {
+  if (!supabase) return defaultMemberStore;
+  const { data: listRows, error: listError } = await supabase.from('user_shop_lists').select('shop_id,list_type').eq('user_id', userId).order('created_at', { ascending: false });
+  if (listError) throw listError;
+  const { data: historyRows, error: historyError } = await supabase.from('user_shop_view_histories').select('shop_id').eq('user_id', userId).order('viewed_at', { ascending: false }).limit(10);
+  if (historyError) throw historyError;
+  const store: MemberStore = { want: [], visited: [], favorite: [], history: [] };
+  (listRows ?? []).forEach((row) => {
+    const kind = row.list_type as SavedKind;
+    if (kind === 'want' || kind === 'visited' || kind === 'favorite') store[kind].push(row.shop_id);
+  });
+  store.history = (historyRows ?? []).map((row) => row.shop_id);
+  return store;
+}
+
+async function loadReviews(): Promise<MemberReview[]> {
+  if (!isSupabaseReady() || !supabase) return sampleReviews;
+  const { data, error } = await supabase.from('reviews').select('id,shop_id,user_id,rating,comment,review_images(public_url)').eq('is_deleted', false).order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map((row) => {
+    const imageUrls = ((row.review_images ?? []) as { public_url: string | null }[]).map((image) => image.public_url).filter(Boolean) as string[];
+    return { id: row.id, userId: row.user_id, shopId: row.shop_id, nickname: '投稿ユーザー', rating: Number(row.rating), comment: row.comment ?? '', hasPhoto: imageUrls.length > 0, imageUrls };
+  });
+}
+
+async function loadNews(): Promise<MemberNews[]> {
+  if (!isSupabaseReady() || !supabase) return sampleNews;
+  const { data, error } = await supabase.from('announcements').select('id,title,body,published_at,created_at').eq('is_published', true).order('published_at', { ascending: false, nullsFirst: false }).order('created_at', { ascending: false }).limit(50);
+  if (error) throw error;
+  const rows = (data ?? []).map((row) => ({ id: row.id, title: row.title, body: row.body, date: formatNewsDate(row.published_at || row.created_at) }));
+  return rows.length ? rows : sampleNews;
+}
+
+async function uploadReviewImage(reviewId: string, userId: string, file: File) {
+  if (!supabase) return null;
+  const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+  const storagePath = `${userId}/${reviewId}/${fileName}`;
+  const { error: uploadError } = await supabase.storage.from('review-images').upload(storagePath, file, { upsert: false });
+  if (uploadError) throw uploadError;
+  const { data } = supabase.storage.from('review-images').getPublicUrl(storagePath);
+  return { storagePath, publicUrl: data.publicUrl };
+}
+
+function useMemberAccount() {
+  const [session, setSession] = useState<MemberSession>(() => isSupabaseReady() ? defaultMemberSession : readJson('iekei-member-session', defaultMemberSession));
+  const [store, setStore] = useState<MemberStore>(() => isSupabaseReady() ? defaultMemberStore : readJson('iekei-member-store', defaultMemberStore));
+  const [reviews, setReviews] = useState<MemberReview[]>(() => isSupabaseReady() ? [] : sampleReviews);
+  const [news, setNews] = useState<MemberNews[]>(() => isSupabaseReady() ? [] : sampleNews);
+  const [ready, setReady] = useState(false);
+
+  const refreshReviews = useCallback(async () => { setReviews(await loadReviews()); }, []);
+  const refreshNews = useCallback(async () => { setNews(await loadNews()); }, []);
+  const refreshMember = useCallback(async () => {
+    if (!isSupabaseReady() || !supabase) { setReady(true); return; }
+    const user = await getCurrentMemberUser();
+    if (!user) { setSession(defaultMemberSession); setStore(defaultMemberStore); setReady(true); return; }
+    const metadataNickname = typeof user.user_metadata?.nickname === 'string' && user.user_metadata.nickname.trim() ? user.user_metadata.nickname.trim() : defaultMemberSession.nickname;
+    const profile = await loadMemberProfile(user.id, metadataNickname);
+    setSession({ loggedIn: true, userId: user.id, email: user.email ?? '', nickname: profile.nickname });
+    setStore(await loadMemberStore(user.id));
+    setReady(true);
+  }, []);
+
+  useEffect(() => {
+    refreshMember().catch(console.error);
+    refreshReviews().catch(console.error);
+    refreshNews().catch(console.error);
+    if (!isSupabaseReady() || !supabase) return;
+    const { data } = supabase.auth.onAuthStateChange(() => { refreshMember().catch(console.error); });
+    return () => data.subscription.unsubscribe();
+  }, [refreshMember, refreshReviews, refreshNews]);
+
+  useEffect(() => { if (!isSupabaseReady()) window.localStorage.setItem('iekei-member-session', JSON.stringify(session)); }, [session]);
+  useEffect(() => { if (!isSupabaseReady()) window.localStorage.setItem('iekei-member-store', JSON.stringify(store)); }, [store]);
+
+  const login = async (email: string, password: string) => {
+    if (!isSupabaseReady() || !supabase) { setSession((current) => ({ ...current, loggedIn: true, email })); return; }
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) throw error;
+    await refreshMember();
+  };
+
+  const signup = async (email: string, password: string) => {
+    const trimmedEmail = email.trim();
+
+    if (!trimmedEmail) throw new Error('メールアドレスを入力してください。');
+    if (password.length < 6) throw new Error('パスワードは6文字以上で入力してください。');
+    if (!isSupabaseReady() || !supabase) {
+      throw new Error('Supabase接続情報が見つかりません。.env.localを確認してください。');
+    }
+
+    console.log('SIGNUP REQUEST:', { email: trimmedEmail });
+
+    const { data, error } = await supabase.auth.signUp({
+      email: trimmedEmail,
+      password,
+    });
+
+    console.log('SIGNUP RESPONSE:', {
+      userId: data.user?.id ?? null,
+      email: data.user?.email ?? null,
+      hasSession: Boolean(data.session),
+      error: error ? { name: error.name, message: error.message, status: error.status } : null,
+    });
+
+    if (error) throw new Error(getErrorMessage(error, '登録に失敗しました。'));
+    if (!data.user) {
+      throw new Error('Supabaseからユーザー作成結果が返りませんでした。Authentication設定を確認してください。');
+    }
+
+    // Supabase側で「Confirm email」をOFFにしている前提。
+    // 登録直後にログイン状態へ進める。
+    if (!data.session) {
+      await login(trimmedEmail, password);
+    }
+
+    await upsertMemberProfile(data.user.id, defaultMemberSession.nickname);
+    await refreshMember();
+  };
+  const logout = async () => {
+    if (!isSupabaseReady() || !supabase) { setSession((current) => ({ ...current, loggedIn: false })); return; }
+    const { error } = await supabase.auth.signOut();
+    if (error) throw error;
+    setSession(defaultMemberSession);
+    setStore(defaultMemberStore);
+  };
+
+  const updateProfile = async (next: Pick<MemberSession, 'nickname'>) => {
+    if (!isSupabaseReady() || !supabase) { setSession((current) => ({ ...current, ...next })); return; }
+    const user = await getCurrentMemberUser();
+    if (!user) throw new Error('ログインが必要です。');
+    await upsertMemberProfile(user.id, next.nickname);
+    setSession((current) => ({ ...current, ...next }));
+  };
+
+  const toggleSaved = async (kind: SavedKind, shopId: string) => {
+    if (!isSupabaseReady() || !supabase) {
+      setStore((current) => {
+        const exists = current[kind].includes(shopId);
+        return { ...current, [kind]: exists ? current[kind].filter((id) => id !== shopId) : [shopId, ...current[kind]] };
+      });
+      return;
+    }
+    const user = await getCurrentMemberUser();
+    if (!user) throw new Error('ログインが必要です。');
+    const exists = store[kind].includes(shopId);
+    if (exists) {
+      const { error } = await supabase.from('user_shop_lists').delete().eq('user_id', user.id).eq('shop_id', shopId).eq('list_type', kind);
+      if (error) throw error;
+    } else {
+      const { error } = await supabase.from('user_shop_lists').insert({ user_id: user.id, shop_id: shopId, list_type: kind });
+      if (error) throw error;
+    }
+    setStore(await loadMemberStore(user.id));
+  };
+
+  const addHistory = async (shopId: string) => {
+    if (!shopId) return;
+    if (!isSupabaseReady() || !supabase || !session.loggedIn) { setStore((current) => ({ ...current, history: [shopId, ...current.history.filter((id) => id !== shopId)].slice(0, 10) })); return; }
+    const user = await getCurrentMemberUser();
+    if (!user) return;
+    const { error } = await supabase.from('user_shop_view_histories').upsert({ user_id: user.id, shop_id: shopId, viewed_at: new Date().toISOString() }, { onConflict: 'user_id,shop_id' });
+    if (error) throw error;
+    setStore(await loadMemberStore(user.id));
+  };
+
+  const clearHistory = async () => {
+    if (!isSupabaseReady() || !supabase) { setStore((current) => ({ ...current, history: [] })); return; }
+    const user = await getCurrentMemberUser();
+    if (!user) return;
+    const { error } = await supabase.from('user_shop_view_histories').delete().eq('user_id', user.id);
+    if (error) throw error;
+    setStore((current) => ({ ...current, history: [] }));
+  };
+
+  const submitReview = async (shopId: string, rating: number, comment: string, file?: File | null) => {
+    if (!isSupabaseReady() || !supabase) {
+      const next: MemberReview = { id: String(Date.now()), userId: session.userId || 'local-user', shopId, nickname: session.nickname, rating, comment, hasPhoto: Boolean(file), imageUrls: [] };
+      setReviews((current) => [next, ...current.filter((review) => !(review.shopId === shopId && review.nickname === session.nickname))]);
+      return;
+    }
+    const user = await getCurrentMemberUser();
+    if (!user) throw new Error('ログインが必要です。');
+    const { data, error } = await supabase.from('reviews').upsert({ user_id: user.id, shop_id: shopId, rating, comment: comment.trim() || null, is_deleted: false }, { onConflict: 'user_id,shop_id' }).select('id').single();
+    if (error) throw error;
+    if (file && data?.id) {
+      const uploaded = await uploadReviewImage(data.id, user.id, file);
+      if (uploaded) {
+        const { error: imageError } = await supabase.from('review_images').insert({ review_id: data.id, storage_path: uploaded.storagePath, public_url: uploaded.publicUrl, sort_order: 0 });
+        if (imageError) throw imageError;
+      }
+    }
+    await refreshReviews();
+  };
+
+  const resetPassword = async (email: string) => {
+    if (!isSupabaseReady() || !supabase) return;
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+    if (error) throw error;
+  };
+
+  const withdraw = async () => {
+    if (!isSupabaseReady() || !supabase) { setSession(defaultMemberSession); setStore(defaultMemberStore); return; }
+    const user = await getCurrentMemberUser();
+    if (user) {
+      const { error } = await supabase.from('users_profile').update({ is_deleted: true, nickname: '退会済みユーザー' }).eq('user_id', user.id);
+      if (error) throw error;
+    }
+    await logout();
+  };
+
+  return { ready, session, store, reviews, news, login, signup, logout, updateProfile, toggleSaved, addHistory, clearHistory, submitReview, resetPassword, withdraw };
+}
+
+type SupportNotificationSettings = {
+  enabled: boolean;
+  toEmail: string;
+  ccEmail: string;
+};
+
+const defaultSupportNotificationSettings: SupportNotificationSettings = {
+  enabled: true,
+  toEmail: 'unei@example.com',
+  ccEmail: '',
+};
+
+function useSupportNotificationSettings() {
+  const [settings, setSettings] = useState<SupportNotificationSettings>(() => readJson('iekei-support-notification-settings', defaultSupportNotificationSettings));
+
+  useEffect(() => {
+    window.localStorage.setItem('iekei-support-notification-settings', JSON.stringify(settings));
+  }, [settings]);
+
+  const updateSettings = (next: SupportNotificationSettings) => {
+    setSettings({
+      enabled: next.enabled,
+      toEmail: next.toEmail.trim(),
+      ccEmail: next.ccEmail.trim(),
+    });
+  };
+
+  return { settings, updateSettings };
+}
+
+function appendSupportSubmission(payload: Record<string, string>) {
+  try {
+    const raw = window.localStorage.getItem('iekei-support-submissions');
+    const current = raw ? JSON.parse(raw) as Record<string, string>[] : [];
+    window.localStorage.setItem('iekei-support-submissions', JSON.stringify([{ ...payload, createdAt: new Date().toISOString() }, ...current].slice(0, 50)));
+  } catch {
+    // ローカル保存に失敗しても、メール作成導線は止めない
+  }
+}
+
+function buildSupportMailto(settings: SupportNotificationSettings, title: string, payload: Record<string, string>) {
+  const subject = encodeURIComponent(`[家系行脚] ${title}`);
+  const bodyLines = [
+    '以下の内容でユーザーから情報提供がありました。',
+    '',
+    ...Object.entries(payload).map(([key, value]) => `${key}: ${value || '未入力'}`),
+    '',
+    '※このメールは管理画面で設定された通知先に送る想定です。',
+  ];
+  const cc = settings.ccEmail ? `&cc=${encodeURIComponent(settings.ccEmail)}` : '';
+  return `mailto:${encodeURIComponent(settings.toEmail)}?subject=${subject}${cc}&body=${encodeURIComponent(bodyLines.join('\n'))}`;
+}
+
+function collectFormPayload(form: HTMLFormElement) {
+  const formData = new FormData(form);
+  const payload: Record<string, string> = {};
+  formData.forEach((value, key) => {
+    if (value instanceof File) {
+      payload[key] = value.name || '選択なし';
+    } else {
+      payload[key] = value;
+    }
+  });
+  return payload;
+}
+
+function createShopMarkerIcon(selected: boolean, favorite = false) {
   return L.divIcon({
     className: 'custom-marker-wrapper',
-    html: `<span class="custom-marker-dot ${selected ? 'selected' : ''}"></span>`,
+    html: `<span class="custom-marker-dot ${favorite ? 'favorite' : ''} ${selected ? 'selected' : ''}"></span>`,
     iconSize: [20, 20],
     iconAnchor: [10, 20],
     popupAnchor: [0, -16]
@@ -574,21 +986,46 @@ function createShopMarkerIcon(selected: boolean) {
 
 export default function App() {
   const shopState = useShops();
+  const member = useMemberAccount();
+  const supportNotifications = useSupportNotificationSettings();
 
   return (
     <div className="app-shell">
       <Routes>
         <Route path="/" element={<HomePage shops={shopState.shops} />} />
-        <Route path="/shops" element={<ShopSearchPage shops={shopState.shops} loading={shopState.loading} />} />
-        <Route path="/map" element={<MapPage shops={shopState.shops} />} />
+        <Route path="/shops" element={<ShopSearchPage shops={shopState.shops} loading={shopState.loading} member={member} />} />
+        <Route path="/map" element={<MapPage shops={shopState.shops} member={member} />} />
         <Route path="/genealogy" element={<GenealogyPage shops={shopState.shops} loading={shopState.loading} />} />
-        <Route path="/shops/:shopId" element={<ShopDetailPage shops={shopState.shops} />} />
+        <Route path="/shops/:shopId" element={<ShopDetailPage shops={shopState.shops} member={member} />} />
+        <Route path="/login" element={<MemberLoginPage member={member} />} />
+        <Route path="/signup" element={<MemberSignupPage member={member} />} />
+        <Route path="/password-reset" element={<PasswordResetPage member={member} />} />
+        <Route path="/mypage" element={<MyPage shops={shopState.shops} member={member} />} />
+        <Route path="/mypage/profile" element={<ProfileEditPage member={member} />} />
+        <Route path="/mypage/saved" element={<SavedListPage shops={shopState.shops} member={member} />} />
+        <Route path="/mypage/history" element={<HistoryPage shops={shopState.shops} member={member} />} />
+        <Route path="/mypage/reviews" element={<MyReviewsPage shops={shopState.shops} member={member} />} />
+        <Route path="/mypage/submissions" element={<MySubmissionsPage member={member} />} />
+        <Route path="/mypage/news" element={<NewsListPage member={member} />} />
+        <Route path="/mypage/news/:newsId" element={<NewsDetailPage member={member} />} />
+        <Route path="/contact" element={<ContactPage member={member} notification={supportNotifications.settings} />} />
+        <Route path="/shops/new-suggestion" element={<NewShopSuggestionPage member={member} notification={supportNotifications.settings} />} />
+        <Route path="/shops/:shopId/edit-suggestion" element={<ShopCorrectionPage shops={shopState.shops} member={member} notification={supportNotifications.settings} />} />
+        <Route path="/shops/:shopId/review" element={<ReviewPage shops={shopState.shops} member={member} />} />
+        <Route path="/withdraw" element={<WithdrawPage member={member} />} />
         <Route path="/areas" element={<Navigate to="/shops" replace />} />
-        <Route path="/admin/login" element={<AdminLoginPage />} />
-        <Route path="/admin" element={<AdminRoute><Navigate to="/admin-8fj3k2-3me77nfcb6c0" replace /></AdminRoute>} />
-        <Route path="/admin-8fj3k2-3me77nfcb6c0" element={<AdminRoute><AdminTopPage shops={shopState.shops} /></AdminRoute>} />
-        <Route path="/admin/shops" element={<AdminRoute><AdminShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></AdminRoute>} />
-        <Route path="/admin/shops/:shopId" element={<AdminRoute><AdminEditPage shops={shopState.shops} onSaved={shopState.refresh} /></AdminRoute>} />
+        <Route path="/admin/login" element={<Navigate to="/admin-8fj3k2-3me77nfcb6c0/login" replace />} />
+        <Route path="/admin" element={<Navigate to="/admin-8fj3k2-3me77nfcb6c0" replace />} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/login" element={<AdminLoginPage />} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0" element={<AdminRoute><AdminTopPage shops={shopState.shops} notification={supportNotifications.settings} onSaveNotification={supportNotifications.updateSettings} /></AdminRoute>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/settings" element={<AdminRoute><AdminSettingsPage notification={supportNotifications.settings} onSave={supportNotifications.updateSettings} /></AdminRoute>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/shops" element={<AdminRoute><AdminShopsPage shops={shopState.shops} loading={shopState.loading} onDeleted={shopState.refresh} onRefresh={shopState.refresh} /></AdminRoute>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/submissions" element={<AdminRoute><AdminSubmissionsPage /></AdminRoute>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/submissions/:submissionId" element={<AdminRoute><AdminSubmissionDetailPage /></AdminRoute>} />
+        <Route path="/admin-8fj3k2-3me77nfcb6c0/shops/:shopId" element={<AdminRoute><AdminEditPage shops={shopState.shops} onSaved={shopState.refresh} /></AdminRoute>} />
+        <Route path="/admin/settings" element={<Navigate to="/admin-8fj3k2-3me77nfcb6c0/settings" replace />} />
+        <Route path="/admin/shops" element={<Navigate to="/admin-8fj3k2-3me77nfcb6c0/shops" replace />} />
+        <Route path="/admin/shops/:shopId" element={<AdminLegacyShopRedirect />} />
       </Routes>
     </div>
   );
@@ -624,9 +1061,14 @@ function AdminRoute({ children }: { children: ReactNode }) {
   }
 
   if (!allowed) {
-    return <Navigate to="/admin/login" replace state={{ from: `${location.pathname}${location.search}` }} />;
+    return <Navigate to="/admin-8fj3k2-3me77nfcb6c0/login" replace state={{ from: `${location.pathname}${location.search}` }} />;
   }
   return children;
+}
+
+function AdminLegacyShopRedirect() {
+  const { shopId } = useParams();
+  return <Navigate to={`/admin-8fj3k2-3me77nfcb6c0/shops/${shopId ?? ''}`} replace />;
 }
 
 function Header({ title, backTo, backState, eyebrow = '家系行脚', backLabel = '← 戻る', className = '', hideTitle = false, preferExplicitBackTarget = false }: { title: string; backTo?: string; backState?: Record<string, unknown>; eyebrow?: string; backLabel?: string; className?: string; hideTitle?: boolean; preferExplicitBackTarget?: boolean }) {
@@ -674,7 +1116,7 @@ function HomePage(_: { shops: Shop[] }) {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="店名 / 住所 / 最寄り駅で検索"
+              placeholder="店名で検索"
             />
             <button type="submit" className="primary-button">検索</button>
           </form>
@@ -689,7 +1131,7 @@ function HomePage(_: { shops: Shop[] }) {
   );
 }
 
-function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean }) {
+function ShopSearchPage({ shops, loading, member }: { shops: Shop[]; loading: boolean; member: ReturnType<typeof useMemberAccount> }) {
   const location = useLocation();
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -700,7 +1142,7 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
     setSearchText(filters.q);
   }, [filters.q]);
 
-  const filtered = useMemo(() => filterShops(shops, filters), [filters, shops]);
+  const filtered = useMemo(() => filterShopsBySaved(shops, filters, member.store), [filters, member.store, shops]);
 
   const updateFilters = (nextValues: Partial<SearchFilters>) => {
     const nextFilters: SearchFilters = {
@@ -709,6 +1151,7 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
       tag: nextValues.tag ?? filters.tag,
       parking: nextValues.parking === undefined ? filters.parking : nextValues.parking,
       nodoId: nextValues.nodoId ?? filters.nodoId,
+      saved: nextValues.saved ?? filters.saved,
     };
     setSearchParams(buildSearchParams(nextFilters), { replace: true });
   };
@@ -744,7 +1187,13 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
           <input className="full-input" value={searchText} onChange={(e) => setSearchText(e.target.value)} placeholder="店名 / 住所 / 最寄り駅" />
           <button type="submit" className="primary-button">検索</button>
         </form>
-        <div className="filter-inline-row">
+        <div className="filter-inline-row search-filter-row">
+          <FilterDropdown
+            placeholder="保存"
+            value={filters.saved}
+            options={savedFilterOptions}
+            onChange={(value) => updateFilters({ saved: value as SavedKind | '' })}
+          />
           <FilterDropdown
             placeholder="源流"
             value={filters.origin}
@@ -779,7 +1228,7 @@ function ShopSearchPage({ shops, loading }: { shops: Shop[]; loading: boolean })
   );
 }
 
-function MapPage({ shops }: { shops: Shop[] }) {
+function MapPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -800,7 +1249,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
   const [activeFilters, setActiveFilters] = useState<SearchFilters>(initialFilters);
   const [draftFilters, setDraftFilters] = useState<SearchFilters>(initialFilters);
   const [expanded, setExpanded] = useState(initialEntrySource === 'searchResults' && !!(initialFilters.q || initialFilters.origin || initialFilters.tag || initialFilters.parking !== null));
-  const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)) : filterShops(shops, initialFilters));
+  const [visibleShops, setVisibleShops] = useState<Shop[]>(() => ids.length ? shops.filter((shop) => ids.includes(shop.id) && isPublicShop(shop)) : filterShopsBySaved(shops, initialFilters, member.store));
   const [mapCenter, setMapCenter] = useState<[number, number]>(initialMapView?.center ?? defaultCenter);
   const [mapZoom, setMapZoom] = useState(initialMapView?.zoom ?? 12);
   const [fitToShops, setFitToShops] = useState<boolean>(() => shouldFitMapOnInitialLoad({ ids, filters: initialFilters, isOsmSearchMode: initialOsmMode, initialSelectedShopId: initialSelected }));
@@ -849,7 +1298,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
         setSelectedShopId(initialSelected);
       }
     } else {
-      const filteredShops = filterShops(shops, initialFilters);
+      const filteredShops = filterShopsBySaved(shops, initialFilters, member.store);
       const nextVisible = isOsmSearchMode ? allPublicShops : filteredShops;
       setVisibleShops(nextVisible);
       const shouldPreserveView = preserveViewOnNextSyncRef.current;
@@ -872,7 +1321,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
       }
     }
     setSearchMessage('');
-  }, [allPublicShops, hasMapSearched, ids, initialFilters, initialMapView, initialSelected, isOsmSearchMode, shops]);
+  }, [allPublicShops, hasMapSearched, ids, initialFilters, initialMapView, initialSelected, isOsmSearchMode, member.store, shops]);
 
   useEffect(() => {
     if (selectedShopId && !visibleShops.some((shop) => shop.id === selectedShopId)) {
@@ -1070,7 +1519,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setUserPosition(null);
     setSuppressViewportMoveKey((current) => current + 1);
 
-    const nextVisibleShops = filterShops(shops, { ...nextFilters, q: searchText });
+    const nextVisibleShops = filterShopsBySaved(shops, { ...nextFilters, q: searchText }, member.store);
     setVisibleShops(nextVisibleShops);
     setFitToShops(false);
 
@@ -1082,7 +1531,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     nextParams.delete('osm');
     nextParams.delete('selected');
     setSearchParams(nextParams, { replace: true });
-  }, [searchText, setSearchParams, shops]);
+  }, [member.store, searchText, setSearchParams, shops]);
 
   const applyMapSearch = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -1098,7 +1547,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
     setSearchMessage('');
     setUserPosition(null);
 
-    const nextVisibleShops = filterShops(shops, nextFilters);
+    const nextVisibleShops = filterShopsBySaved(shops, nextFilters, member.store);
     setVisibleShops(nextVisibleShops);
 
     const currentView = getLatestMapSnapshot();
@@ -1194,7 +1643,7 @@ function MapPage({ shops }: { shops: Shop[] }) {
                 <Marker
                   key={shop.id}
                   position={[shop.lat, shop.lng]}
-                  icon={createShopMarkerIcon(selected)}
+                  icon={createShopMarkerIcon(selected, member.store.favorite.includes(shop.id))}
                   eventHandlers={{
                     click: () => {
                       const currentView = getLatestMapSnapshot();
@@ -1307,6 +1756,12 @@ function MapSearchHeader({
         {expanded ? (
           <div className="map-search-filters">
             <div className="filter-inline-row map-filter-inline-row">
+              <FilterDropdown
+                placeholder="保存"
+                value={filters.saved}
+                options={savedFilterOptions}
+                onChange={(value) => onFiltersChange({ ...filters, saved: value as SavedKind | '' })}
+              />
               <FilterDropdown
                 placeholder="源流"
                 value={filters.origin}
@@ -1513,7 +1968,7 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
   return null;
 }
 
-function ShopDetailPage({ shops }: { shops: Shop[] }) {
+function ShopDetailPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
   const location = useLocation();
   const { shopId } = useParams();
   const shop = shops.find((item) => item.id === shopId) ?? null;
@@ -1524,7 +1979,19 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
     : '/map';
   const detailUrl = shop ? `/shops/${shop.id}` : '/shops';
   const genealogyLink = shop ? buildGenealogyUrl({ tag: shop.tag, focusNodeId: shop.nodoId || shop.id, zoom: 1 }) : '/genealogy';
+  useEffect(() => {
+    if (shop) member.addHistory(shop.id);
+  }, [shop?.id]);
+
   if (!shop) return <main className="page"><Header title="店舗詳細" backTo={backTo} preferExplicitBackTarget /><p>店舗が見つかりませんでした。</p></main>;
+  const promptTo = `/login?next=${encodeURIComponent(detailUrl)}`;
+  const handleSave = (kind: SavedKind) => {
+    if (!member.session.loggedIn) {
+      window.location.href = `${promptTo}&action=${kind}`;
+      return;
+    }
+    member.toggleSaved(kind, shop.id);
+  };
   return (
     <main className="page detail-page">
       <Header title="店舗詳細" backTo={backTo} preferExplicitBackTarget />
@@ -1541,6 +2008,11 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
           })}
         </div>
       </section>
+      <div className="detail-quick-actions">
+        <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo }, entrySource: 'detail' as MapEntrySource }}>地図で見る</Link>
+        <Link className="secondary-button block" to={genealogyLink} state={{ backTo: detailUrl, backState: { backTo }, focusNodeId: shop.nodoId || shop.id }}>系譜図で見る</Link>
+        <Link className="secondary-button block" to={`/shops/${shop.id}/edit-suggestion`}>情報修正</Link>
+      </div>
       <section className="detail-summary">
         <h2>{shop.name}</h2>
         <div className="tag-row">
@@ -1548,6 +2020,24 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
           <span className="lineage-chip">{shop.origin}</span>
         </div>
         <p className="lead">{shop.station || shop.address}</p>
+      </section>
+      <section className="member-save-panel" aria-label="保存アクション">
+        {(Object.keys(savedLabels) as SavedKind[]).map((kind) => {
+          const active = member.store[kind].includes(shop.id);
+          return (
+            <button key={kind} type="button" className={`save-pill ${active ? 'is-active' : ''}`} onClick={() => handleSave(kind)}>
+              <span>{active ? '✓' : '+'}</span>{savedLabels[kind]}
+            </button>
+          );
+        })}
+      </section>
+      {!member.session.loggedIn ? <LoginGuideCard actionLabel="保存・レビュー" /> : null}
+      <section className="section compact">
+        <div className="section-head"><h2>レビュー</h2><Link className="text-link" to={`/shops/${shop.id}/review`}>レビューを書く</Link></div>
+        <div className="review-list">
+          {member.reviews.filter((review) => review.shopId === shop.id).map((review) => <ReviewCard key={review.id} review={review} />)}
+          {!member.reviews.some((review) => review.shopId === shop.id) ? <p className="empty-text">まだレビューはありません。最初のレビューを書いてみましょう。</p> : null}
+        </div>
       </section>
       <section className="detail-grid section compact">
         <DetailItem label="系譜" value={shop.genealogy || '未設定'} multiline />
@@ -1564,12 +2054,496 @@ function ShopDetailPage({ shops }: { shops: Shop[] }) {
       <div className="action-row section compact">
         <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo }, entrySource: 'detail' as MapEntrySource }}>{'地図で見る'}</Link>
         <Link className="secondary-button block" to={genealogyLink} state={{ backTo: detailUrl, backState: { backTo }, focusNodeId: shop.nodoId || shop.id }}>系譜図を見る</Link>
+        <Link className="secondary-button block" to={`/shops/${shop.id}/edit-suggestion`}>情報修正を提案</Link>
       </div>
       <BottomNav />
     </main>
   );
 }
 
+
+function RequireMember({ member, children, message = 'この機能を使うにはログインが必要です。' }: { member: ReturnType<typeof useMemberAccount>; children: ReactNode; message?: string }) {
+  const location = useLocation();
+  if (!member.session.loggedIn) {
+    return <LoginRequiredPage message={message} next={`${location.pathname}${location.search}`} />;
+  }
+  return <>{children}</>;
+}
+
+function LoginGuideCard({ actionLabel }: { actionLabel: string }) {
+  return <section className="info-card member-guide-card section compact"><strong>{actionLabel}にはログインが必要です</strong><p>ログインすると、気になるお店をあとからすぐ見返せます。</p><Link className="primary-button block" to="/login">ログインする</Link></section>;
+}
+
+function LoginRequiredPage({ message, next }: { message: string; next: string }) {
+  return <main className="page"><Header title="ログインが必要です" backTo="/" /><section className="info-card member-guide-card"><strong>{message}</strong><p>会員登録は無料です。保存一覧、閲覧履歴、レビュー、運営への連絡が使えるようになります。</p><Link className="primary-button block" to={`/login?next=${encodeURIComponent(next)}`}>ログインする</Link><Link className="secondary-button admin-secondary block" to="/signup">新規登録する</Link></section><BottomNav /></main>;
+}
+
+ function MemberLoginPage({ member }: { member: ReturnType<typeof useMemberAccount> }) {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const next = searchParams.get('next') || '/mypage';
+  const action = searchParams.get('action');
+  const [email, setEmail] = useState(member.session.email || '');
+  const [password, setPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      setBusy(true);
+      setMessage('');
+      await member.login(email, password);
+      navigate(next, { replace: true });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'ログインに失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <main className="page admin-login-page"><Header title="ログイン" backTo="/" /><section className="hero-card login-card">{action ? <p className="page-message">{savedLabels[action as SavedKind] ?? 'この操作'}を使うにはログインしてください。</p> : null}<form className="form-stack" onSubmit={submit}><label>メールアドレス<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="member@example.com" /></label><label>パスワード<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="パスワード" /></label><button className="primary-button block" type="submit" disabled={busy}>{busy ? 'ログイン中...' : 'ログイン'}</button></form>{message ? <p className="page-message">{message}</p> : null}<div className="member-link-row"><Link to="/signup">新規登録</Link><Link to="/password-reset">パスワードを忘れた方</Link></div></section></main>;
+}
+
+function MemberSignupPage({ member }: { member: ReturnType<typeof useMemberAccount> }) {
+  const navigate = useNavigate();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    try {
+      setBusy(true);
+      setMessage('');
+      await member.signup(email, password);
+      navigate('/mypage', { replace: true });
+    } catch (error) {
+      setMessage(getErrorMessage(error, '登録に失敗しました。'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <main className="page"><Header title="会員登録" backTo="/login" /><section className="hero-card login-card"><form className="form-stack" onSubmit={submit}><label>メールアドレス<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required /></label><label>パスワード<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="6文字以上" autoComplete="new-password" required minLength={6} /></label><p className="lead">利用規約とプライバシーポリシーに同意して登録します。ユーザーネームはログイン後のマイページで設定できます。</p><button className="primary-button block" type="submit" disabled={busy}>{busy ? '登録中...' : '登録する'}</button></form>{message ? <p className="page-message">{message}</p> : null}</section></main>;
+}
+function PasswordResetPage({ member }: { member: ReturnType<typeof useMemberAccount> }) {
+  const [email, setEmail] = useState('');
+  const [sent, setSent] = useState(false);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    try {
+      setBusy(true);
+      setMessage('');
+      await member.resetPassword(email);
+      setSent(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '送信に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <main className="page"><Header title="パスワード再設定" backTo="/login" /><section className="hero-card login-card"><p className="lead">登録メールアドレスに、再設定用の案内を送ります。</p><form className="form-stack" onSubmit={submit}><label>メールアドレス<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="member@example.com" /></label><button className="primary-button block" type="submit" disabled={busy}>{busy ? '送信中...' : '再設定メールを送る'}</button></form>{sent ? <p className="page-message">送信しました。メールをご確認ください。</p> : null}{message ? <p className="page-message">{message}</p> : null}</section></main>;
+}
+
+ function MyPage({ member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
+  const myReviewCount = member.reviews.filter((review) => review.userId === member.session.userId || (!member.session.userId && review.nickname === member.session.nickname)).length;
+  const savedSummary = `行きたい${member.store.want.length}件・行った${member.store.visited.length}件・お気に入り${member.store.favorite.length}件`;
+  return <RequireMember member={member}><main className="page"><Header title="マイページ" backTo="/" /><section className="hero-card mypage-profile"><span className="eyebrow">プロフィール</span><strong>{member.session.nickname}</strong><Link className="primary-button mypage-profile-edit" to="/mypage/profile">プロフィール編集</Link></section><section className="member-menu-grid section"><MemberMenu to="/mypage/saved" title="保存一覧" desc={savedSummary} /><MemberMenu to="/mypage/history" title="閲覧履歴" desc={`最近見たお店 ${member.store.history.length}件`} /><MemberMenu to="/mypage/reviews" title="投稿したレビュー" desc={`${myReviewCount}件のレビュー`} /><MemberMenu to="/mypage/news" title="お知らせ" desc="運営からの最新情報" /><MemberMenu to="/mypage/submissions" title="提供した店舗情報" desc="承認状況と運営コメントを確認" /><MemberMenu to="/contact" title="問い合わせ" desc="困ったことを運営へ送る" /><MemberMenu to="/shops/new-suggestion" title="新店舗情報提供" desc="未掲載店舗を知らせる" /><MemberMenu to="/withdraw" title="退会" desc="アカウントを削除する" /></section><button className="ghost-button block mypage-logout-button" type="button" onClick={member.logout}>ログアウト</button><BottomNav /></main></RequireMember>;
+}
+
+function MemberMenu({ to, title, desc }: { to: string; title: string; desc: string }) { return <Link className="info-card member-menu-card" to={to}><strong>{title}</strong><span>{desc}</span></Link>; }
+
+function ProfileEditPage({ member }: { member: ReturnType<typeof useMemberAccount> }) {
+  const navigate = useNavigate();
+  const [nickname, setNickname] = useState(member.session.nickname);
+  return <RequireMember member={member}><main className="page"><Header title="プロフィール編集" backTo="/mypage" /><form className="form-stack" onSubmit={async (e) => { e.preventDefault(); await member.updateProfile({ nickname }); navigate('/mypage'); }}><label>ユーザーネーム<input value={nickname} onChange={(e) => setNickname(e.target.value)} /></label><button className="primary-button block" type="submit">保存する</button></form><BottomNav /></main></RequireMember>;
+}
+
+function SavedListPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
+  const [tab, setTab] = useState<SavedKind>('want');
+  const listed = member.store[tab].map((id) => shops.find((shop) => shop.id === id)).filter(Boolean) as Shop[];
+  return <RequireMember member={member}><main className="page"><Header title="保存一覧" backTo="/mypage" /><div className="save-tabs">{(Object.keys(savedLabels) as SavedKind[]).map((kind) => <button key={kind} className={tab === kind ? 'is-active' : ''} onClick={() => setTab(kind)}>{savedLabels[kind]}</button>)}</div><ShopMiniList shops={listed} empty={`${savedLabels[tab]}に保存したお店はまだありません。`} /><BottomNav /></main></RequireMember>;
+}
+
+function HistoryPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
+  const listed = member.store.history.map((id) => shops.find((shop) => shop.id === id)).filter(Boolean) as Shop[];
+  return <RequireMember member={member}><main className="page"><Header title="閲覧履歴" backTo="/mypage" /><div className="section-head"><p className="lead">最近見た店舗を10件まで表示します。</p><button className="small-danger" onClick={member.clearHistory}>削除</button></div><ShopMiniList shops={listed} empty="閲覧履歴はまだありません。" /><BottomNav /></main></RequireMember>;
+}
+
+function ShopMiniList({ shops, empty }: { shops: Shop[]; empty: string }) { if (!shops.length) return <p className="empty-text section">{empty}</p>; return <section className="section">{shops.map((shop) => <Link key={shop.id} className="info-card shop-mini-card" to={`/shops/${shop.id}`}><strong>{shop.name}</strong><span>{shop.station || shop.address}</span></Link>)}</section>; }
+
+function MyReviewsPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
+  const myReviews = member.reviews.filter((review) => review.userId === member.session.userId || (!member.session.userId && review.nickname === member.session.nickname));
+  return <RequireMember member={member}><main className="page"><Header title="投稿したレビュー" backTo="/mypage" />{myReviews.length ? <section className="section">{myReviews.map((review) => { const shop = shops.find((item) => item.id === review.shopId); return <Link key={review.id} className="info-card review-list-card" to={shop ? `/shops/${shop.id}` : '/shops'}><strong>{shop?.name ?? '店舗情報なし'}</strong><span>{'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}{review.hasPhoto ? '・写真あり' : ''}</span><p>{review.comment || 'コメントなし'}</p></Link>; })}</section> : <p className="empty-text section">投稿したレビューはまだありません。</p>}<BottomNav /></main></RequireMember>;
+}
+
+function ReviewCard({ review }: { review: { nickname: string; rating: number; comment: string; hasPhoto: boolean; imageUrls?: string[] } }) {
+  const [expanded, setExpanded] = useState(false);
+  const comment = review.comment || 'コメントなし';
+  const shouldClamp = comment.length > 72;
+
+  return (
+    <article className={`info-card review-card ${expanded ? 'is-expanded' : ''}`}>
+      <strong>{'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}</strong>
+      {review.imageUrls?.length ? <div className="review-image-strip">{review.imageUrls.map((url) => <img key={url} src={url} alt="レビュー画像" />)}</div> : null}
+      <p className="review-comment">{comment}</p>
+      {shouldClamp ? (
+        <button type="button" className="review-more-button" onClick={() => setExpanded((current) => !current)}>
+          {expanded ? '閉じる' : 'もっと見る'}
+        </button>
+      ) : null}
+      {review.hasPhoto ? <span>写真あり</span> : null}
+    </article>
+  );
+}
+
+function ReviewPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
+  const { shopId } = useParams();
+  const shop = shops.find((item) => item.id === shopId);
+  const [rating, setRating] = useState(5);
+  const [comment, setComment] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [done, setDone] = useState(false);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!shop) return;
+    try {
+      setBusy(true);
+      setMessage('');
+      await member.submitReview(shop.id, rating, comment, file);
+      setDone(true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'レビュー投稿に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <RequireMember member={member} message="レビューを書くにはログインが必要です。"><main className="page"><Header title="レビューを書く" backTo={shop ? `/shops/${shop.id}` : '/shops'} /><section className="hero-card"><h2>{shop?.name ?? '店舗'}</h2><p className="lead">★評価は必須、コメントと写真は任意です。</p></section><form className="form-stack section" onSubmit={submit}><label>★評価<select value={rating} onChange={(e) => setRating(Number(e.target.value))}><option value={5}>★★★★★ 5</option><option value={4}>★★★★☆ 4</option><option value={3}>★★★☆☆ 3</option><option value={2}>★★☆☆☆ 2</option><option value={1}>★☆☆☆☆ 1</option></select></label><label>コメント<textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="味・雰囲気・行きやすさなど" /></label><label>写真<input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label><button className="primary-button block" disabled={busy}>{busy ? '投稿中...' : '投稿する'}</button></form>{done ? <p className="page-message">レビューを投稿しました。</p> : null}{message ? <p className="page-message">{message}</p> : null}<BottomNav /></main></RequireMember>;
+}
+
+
+function MySubmissionsPage({ member }: { member: ReturnType<typeof useMemberAccount> }) {
+  const [items, setItems] = useState<ShopSubmission[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+
+  const load = useCallback(async () => {
+    if (!member.session.userId) return;
+    try {
+      setLoading(true);
+      setMessage('');
+      setItems(await listMyShopSubmissions(member.session.userId));
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '提供した店舗情報の取得に失敗しました。');
+    } finally {
+      setLoading(false);
+    }
+  }, [member.session.userId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const statusLabel = (value: ShopSubmissionStatus) => value === 'approved' ? '承認済み' : value === 'rejected' ? '否認' : '確認待ち';
+  const typeLabel = (value: ShopSubmission['submissionType']) => value === 'update' ? '店舗情報の修正' : '新店舗情報の提供';
+
+  return (
+    <RequireMember member={member}>
+      <main className="page">
+        <Header title="提供した店舗情報" backTo="/mypage" />
+        <section className="hero-card">
+          <span className="eyebrow">あなたの投稿</span>
+          <h2>承認状況を確認できます</h2>
+          <p className="lead">承認・否認後も一覧に残ります。否認された場合は、運営からの理由もここに表示されます。</p>
+        </section>
+        {message ? <p className="page-message">{message}</p> : null}
+        <section className="section compact">
+          {loading ? <p>読み込み中です...</p> : null}
+          {!loading && items.length === 0 ? <p className="empty-text">提供した店舗情報はまだありません。</p> : null}
+          {!loading && items.map((item) => (
+            <article key={item.id} className="info-card review-list-card">
+              <strong>{item.name || '店舗名未入力'}</strong>
+              <span>{typeLabel(item.submissionType)} / {statusLabel(item.status)}</span>
+              <p>{item.address || '住所未入力'}</p>
+              {item.adminReason ? <p><strong>運営コメント：</strong>{item.adminReason}</p> : null}
+              {item.importedShopId ? <p>本番反映済み</p> : null}
+              <p className="csv-help">送信日時: {new Date(item.createdAt).toLocaleString('ja-JP')}</p>
+            </article>
+          ))}
+        </section>
+        <BottomNav />
+      </main>
+    </RequireMember>
+  );
+}
+
+function NewsListPage({ member }: { member: ReturnType<typeof useMemberAccount> }) { return <main className="page"><Header title="お知らせ" backTo="/mypage" /><section className="section">{member.news.map((news) => <Link key={news.id} className="info-card member-menu-card" to={`/mypage/news/${news.id}`}><strong>{news.title}</strong><span>{news.date}</span></Link>)}</section><BottomNav /></main>; }
+
+function NewsDetailPage({ member }: { member: ReturnType<typeof useMemberAccount> }) { const { newsId } = useParams(); const news = member.news.find((item) => item.id === newsId) ?? member.news[0] ?? sampleNews[0]; return <main className="page"><Header title="お知らせ詳細" backTo="/mypage/news" /><section className="hero-card"><p className="eyebrow">{news.date}</p><h2>{news.title}</h2><p className="lead">{news.body}</p></section><BottomNav /></main>; }
+
+ function ContactPage({ member, notification }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
+  return <SupportForm member={member} notification={notification} title="問い合わせ" backTo="/mypage" fields={<><label>種別<select name="category"><option>店舗情報について</option><option>アプリの使い方</option><option>その他</option></select></label><label>件名<input name="subject" placeholder="例：表示内容について" /></label><label>内容<textarea name="body" placeholder="困っていることや確認したいことを書いてください" /></label></>} />;
+}
+
+type NewShopSuggestionFormState = {
+  name: string;
+  tag: Tag;
+  address: string;
+  station: string;
+  hours: string;
+  holiday: string;
+  parking: '' | 'true' | 'false';
+  officialUrl: string;
+  image: string;
+  origin: string;
+  genealogy: string;
+};
+
+const defaultNewShopSuggestionForm: NewShopSuggestionFormState = {
+  name: '',
+  tag: '独立系',
+  address: '',
+  station: '',
+  hours: '',
+  holiday: '',
+  parking: '',
+  officialUrl: '',
+  image: '',
+  origin: '',
+  genealogy: '',
+};
+
+function NewShopSuggestionPage({ member }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
+  const [form, setForm] = useState<NewShopSuggestionFormState>(defaultNewShopSuggestionForm);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const navigate = useNavigate();
+
+  const canSubmit = form.name.trim().length > 0 && form.tag.trim().length > 0 && form.address.trim().length > 0;
+
+  const updateForm = (key: keyof NewShopSuggestionFormState, value: string) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!canSubmit || busy) return;
+
+    try {
+      setBusy(true);
+      setMessage('');
+      await createNewShopSubmission({
+        userId: member.session.userId,
+        name: form.name,
+        tag: form.tag,
+        address: form.address,
+        station: form.station,
+        hours: form.hours,
+        holiday: form.holiday,
+        parking: form.parking === '' ? null : form.parking === 'true',
+        officialUrl: form.officialUrl,
+        image: form.image,
+        origin: form.origin,
+        genealogy: form.genealogy,
+      });
+      setForm(defaultNewShopSuggestionForm);
+      setMessage('店舗情報を受け付けました。運営確認後、マイページで結果を確認できるようにします。');
+    } catch (err) {
+      setMessage(getErrorMessage(err, '送信に失敗しました。時間をおいて再度お試しください。'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <RequireMember member={member} message="新店舗情報提供にはログインが必要です。">
+      <main className="page">
+        <Header title="新店舗情報提供" backTo="/mypage" />
+        <section className="info-card section compact">
+          <strong>わかる範囲で大丈夫です</strong>
+          <p>本番DBには直接反映されません。運営が確認し、不足情報を補ってから正式登録します。</p>
+        </section>
+        <form className="form-stack section compact" onSubmit={submit}>
+          <label>店舗名 <span className="required-badge">必須</span><input value={form.name} onChange={(e) => updateForm('name', e.target.value)} placeholder="例：家系ラーメン 〇〇家" required /></label>
+          <label>分類 <span className="required-badge">必須</span><select value={form.tag} onChange={(e) => updateForm('tag', e.target.value)}>{tags.map((item) => <option key={item}>{item}</option>)}</select></label>
+          <label>住所 <span className="required-badge">必須</span><input value={form.address} onChange={(e) => updateForm('address', e.target.value)} placeholder="例：神奈川県横浜市..." required /></label>
+          <label>最寄駅<input value={form.station} onChange={(e) => updateForm('station', e.target.value)} placeholder="例：横浜駅" /></label>
+          <label>営業時間<textarea value={form.hours} onChange={(e) => updateForm('hours', e.target.value)} placeholder="例：11:00〜15:00 / 17:00〜22:00" /></label>
+          <label>定休日<input value={form.holiday} onChange={(e) => updateForm('holiday', e.target.value)} placeholder="例：月曜日" /></label>
+          <label>駐車場<select value={form.parking} onChange={(e) => updateForm('parking', e.target.value)}><option value="">不明</option><option value="true">あり</option><option value="false">なし</option></select></label>
+          <label>公式URL<input value={form.officialUrl} onChange={(e) => updateForm('officialUrl', e.target.value)} placeholder="https://..." inputMode="url" /></label>
+          <label>画像URL<input value={form.image} onChange={(e) => updateForm('image', e.target.value)} placeholder="画像ページやSNS投稿URLなど" inputMode="url" /></label>
+          <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder="例：吉村家系。わからなければ空欄でOK" /></label>
+          <label>系譜<input value={form.genealogy} onChange={(e) => updateForm('genealogy', e.target.value)} placeholder="例：吉村家 → ○○家。わからなければ空欄でOK" /></label>
+          {!canSubmit ? <p className="form-hint">店舗名・分類・住所を入力すると送信できます。</p> : null}
+          <div className="action-row">
+            <button className="primary-button block" type="submit" disabled={!canSubmit || busy}>{busy ? '送信中...' : '送信する'}</button>
+            <button className="secondary-button block admin-secondary" type="button" onClick={() => navigate('/mypage')} disabled={busy}>戻る</button>
+          </div>
+        </form>
+        {message ? <p className="page-message">{message}</p> : null}
+        <BottomNav />
+      </main>
+    </RequireMember>
+  );
+}
+
+type ShopCorrectionFormState = {
+  name: string;
+  tag: '' | Tag;
+  address: string;
+  station: string;
+  hours: string;
+  holiday: string;
+  phone: string;
+  seats: string;
+  parking: '' | 'true' | 'false';
+  officialUrl: string;
+  officialAccount: string;
+  image: string;
+  origin: string;
+  genealogy: string;
+  memo: string;
+};
+
+const defaultShopCorrectionForm: ShopCorrectionFormState = {
+  name: '',
+  tag: '',
+  address: '',
+  station: '',
+  hours: '',
+  holiday: '',
+  phone: '',
+  seats: '',
+  parking: '',
+  officialUrl: '',
+  officialAccount: '',
+  image: '',
+  origin: '',
+  genealogy: '',
+  memo: '',
+};
+
+function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
+  const { shopId } = useParams();
+  const shop = shops.find((item) => item.id === shopId);
+  const [form, setForm] = useState<ShopCorrectionFormState>(defaultShopCorrectionForm);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const navigate = useNavigate();
+
+  const canSubmit = Object.values(form).some((value) => value.trim().length > 0);
+
+  const updateForm = (key: keyof ShopCorrectionFormState, value: string) => {
+    setForm((current) => ({ ...current, [key]: value }));
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!shop || !canSubmit || busy) return;
+
+    try {
+      setBusy(true);
+      setMessage('');
+      await createUpdateShopSubmission({
+        userId: member.session.userId,
+        targetShopId: shop.id,
+        name: form.name.trim() || shop.name,
+        tag: form.tag || shop.tag,
+        address: form.address.trim() || shop.address || '住所未確認',
+        station: form.station,
+        hours: form.hours,
+        holiday: form.holiday,
+        phone: form.phone,
+        seats: form.seats,
+        parking: form.parking === '' ? null : form.parking === 'true',
+        officialUrl: form.officialUrl,
+        officialAccount: form.officialAccount,
+        image: form.image,
+        origin: form.origin,
+        genealogy: form.genealogy,
+        memo: form.memo,
+      });
+      setForm(defaultShopCorrectionForm);
+      setMessage('店舗情報の修正提案を受け付けました。運営確認後、マイページで結果を確認できるようにします。');
+    } catch (err) {
+      setMessage(getErrorMessage(err, '送信に失敗しました。時間をおいて再度お試しください。'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!shop) {
+    return <main className="page"><Header title="店舗情報の修正提案" backTo="/shops" /><p className="empty-text section">対象店舗が見つかりません。</p><BottomNav /></main>;
+  }
+
+  return (
+    <RequireMember member={member} message="店舗情報の修正提案にはログインが必要です。">
+      <main className="page">
+        <Header title="店舗情報の修正提案" backTo={`/shops/${shop.id}`} />
+        <section className="info-card section compact">
+          <strong>{shop.name}</strong>
+          <p>修正したい項目だけ入力してください。未入力の項目は、運営が確認時に必要に応じて補完します。</p>
+        </section>
+        <form className="form-stack section compact" onSubmit={submit}>
+          <label>店名<input value={form.name} onChange={(e) => updateForm('name', e.target.value)} placeholder={shop.name} /></label>
+          <label>分類<select value={form.tag} onChange={(e) => updateForm('tag', e.target.value)}><option value="">変更なし（{shop.tag}）</option>{tags.map((item) => <option key={item}>{item}</option>)}</select></label>
+          <label>住所<input value={form.address} onChange={(e) => updateForm('address', e.target.value)} placeholder={shop.address || '例：神奈川県横浜市...'} /></label>
+          <label>最寄駅<input value={form.station} onChange={(e) => updateForm('station', e.target.value)} placeholder={shop.station || '例：横浜駅'} /></label>
+          <label>営業時間<textarea value={form.hours} onChange={(e) => updateForm('hours', e.target.value)} placeholder={shop.hours || '例：11:00〜15:00 / 17:00〜22:00'} /></label>
+          <label>定休日<input value={form.holiday} onChange={(e) => updateForm('holiday', e.target.value)} placeholder={shop.holiday || '例：月曜日'} /></label>
+          <label>電話番号<input value={form.phone} onChange={(e) => updateForm('phone', e.target.value)} placeholder={shop.phone || '例：045-000-0000'} inputMode="tel" /></label>
+          <label>席数<input value={form.seats} onChange={(e) => updateForm('seats', e.target.value)} placeholder={shop.seats || '例：カウンター10席'} /></label>
+          <label>駐車場<select value={form.parking} onChange={(e) => updateForm('parking', e.target.value)}><option value="">変更なし（{shop.parking ? 'あり' : 'なし'}）</option><option value="true">あり</option><option value="false">なし</option></select></label>
+          <label>公式URL<input value={form.officialUrl} onChange={(e) => updateForm('officialUrl', e.target.value)} placeholder={shop.officialUrl || 'https://...'} inputMode="url" /></label>
+          <label>公式SNS<input value={form.officialAccount} onChange={(e) => updateForm('officialAccount', e.target.value)} placeholder={shop.officialAccount || 'X / Instagram など'} /></label>
+          <label>画像URL<input value={form.image} onChange={(e) => updateForm('image', e.target.value)} placeholder={shop.image || '画像ページやSNS投稿URLなど'} inputMode="url" /></label>
+          <label>源流<input value={form.origin} onChange={(e) => updateForm('origin', e.target.value)} placeholder={shop.origin || '例：吉村家系'} /></label>
+          <label>系譜<input value={form.genealogy} onChange={(e) => updateForm('genealogy', e.target.value)} placeholder={shop.genealogy || '例：吉村家 → ○○家'} /></label>
+          <label>補足<textarea value={form.memo} onChange={(e) => updateForm('memo', e.target.value)} placeholder="根拠URL、補足、気づいたことなど" /></label>
+          {!canSubmit ? <p className="form-hint">修正したい項目を1つ以上入力すると送信できます。</p> : null}
+          <div className="action-row">
+            <button className="primary-button block" type="submit" disabled={!canSubmit || busy}>{busy ? '送信中...' : '送信する'}</button>
+            <button className="secondary-button block admin-secondary" type="button" onClick={() => navigate(`/shops/${shop.id}`)} disabled={busy}>戻る</button>
+          </div>
+        </form>
+        {message ? <p className="page-message">{message}</p> : null}
+        <BottomNav />
+      </main>
+    </RequireMember>
+  );
+}
+
+function SupportForm({ member, notification, title, backTo, fields, intro, canSubmit = true, disabledMessage }: { member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings; title: string; backTo: string; fields: ReactNode; intro?: string; canSubmit?: boolean; disabledMessage?: string }) {
+  const [done, setDone] = useState(false);
+  const [mailHref, setMailHref] = useState('');
+  const mailEnabled = notification.enabled && notification.toEmail.trim().length > 0;
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSubmit) return;
+    const payload = {
+      種別: title,
+      送信者: member.session.email || '未取得',
+      ...collectFormPayload(event.currentTarget),
+    };
+    appendSupportSubmission(payload);
+    const href = mailEnabled ? buildSupportMailto(notification, title, payload) : '';
+    setMailHref(href);
+    setDone(true);
+    if (href) {
+      window.location.href = href;
+    }
+  };
+
+  return <RequireMember member={member} message={`${title}にはログインが必要です。`}><main className="page"><Header title={title} backTo={backTo} />{intro ? <section className="info-card section compact"><p>{intro}</p></section> : null}<section className="info-card section compact"><strong>送信先</strong><span>{mailEnabled ? notification.toEmail : '通知メールは未設定です。管理画面で設定してください。'}</span>{notification.ccEmail ? <span>CC: {notification.ccEmail}</span> : null}</section><form className="form-stack" onSubmit={submit}>{fields}{!canSubmit && disabledMessage ? <p className="form-hint">{disabledMessage}</p> : null}<button className="primary-button block" disabled={!canSubmit}>送信する</button></form>{done ? <section className="page-message"><p>送信内容を受け付けました。メールアプリが開かない場合は、下のボタンから運営宛メールを作成してください。</p>{mailHref ? <a className="secondary-button block admin-secondary" href={mailHref}>運営宛メールを開く</a> : null}</section> : null}<BottomNav /></main></RequireMember>;
+}
+
+function WithdrawPage({ member }: { member: ReturnType<typeof useMemberAccount> }) {
+  const navigate = useNavigate();
+  return <RequireMember member={member}><main className="page"><Header title="退会確認" backTo="/mypage" /><section className="hero-card login-card"><h2>退会しますか？</h2><p className="lead">保存一覧、閲覧履歴、レビュー情報が使えなくなります。</p><button className="small-danger block" onClick={async () => { await member.withdraw(); navigate('/'); }}>退会する</button></section><BottomNav /></main></RequireMember>;
+}
 function AdminLoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -1614,9 +2588,19 @@ function AdminLoginPage() {
   );
 }
 
-function AdminTopPage({ shops }: { shops: Shop[] }) {
+function AdminTopPage({ shops, notification, onSaveNotification }: { shops: Shop[]; notification: SupportNotificationSettings; onSaveNotification: (next: SupportNotificationSettings) => void }) {
   const navigate = useNavigate();
   const [adminEmail, setAdminEmail] = useState('');
+  const [notificationEnabled, setNotificationEnabled] = useState(notification.enabled);
+  const [notificationToEmail, setNotificationToEmail] = useState(notification.toEmail);
+  const [notificationCcEmail, setNotificationCcEmail] = useState(notification.ccEmail);
+  const [notificationMessage, setNotificationMessage] = useState('');
+
+  useEffect(() => {
+    setNotificationEnabled(notification.enabled);
+    setNotificationToEmail(notification.toEmail);
+    setNotificationCcEmail(notification.ccEmail);
+  }, [notification.ccEmail, notification.enabled, notification.toEmail]);
 
   useEffect(() => {
     let active = true;
@@ -1632,7 +2616,20 @@ function AdminTopPage({ shops }: { shops: Shop[] }) {
 
   const logout = async () => {
     await signOutAdmin();
-    navigate('/admin/login', { replace: true });
+    navigate('/admin-8fj3k2-3me77nfcb6c0/login', { replace: true });
+  };
+
+  const canSaveNotification = !notificationEnabled || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationToEmail.trim());
+
+  const saveNotification = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSaveNotification) return;
+    onSaveNotification({
+      enabled: notificationEnabled,
+      toEmail: notificationToEmail,
+      ccEmail: notificationCcEmail,
+    });
+    setNotificationMessage('通知先を保存しました。');
   };
 
   return (
@@ -1650,12 +2647,271 @@ function AdminTopPage({ shops }: { shops: Shop[] }) {
         <article className="info-card"><strong>{shops.filter((shop) => !shop.officialUrl).length}</strong><span>要確認URL</span></article>
       </section>
       <section className="section compact admin-links">
-        <Link className="primary-button block" to="/admin/shops">店舗一覧へ</Link>
-        <Link className="secondary-button block admin-secondary" to="/admin/shops/new">店舗登録へ</Link>
+        <Link className="primary-button block" to="/admin-8fj3k2-3me77nfcb6c0/submissions">店舗情報提供の確認へ</Link>
+        <Link className="secondary-button block admin-secondary" to="/admin-8fj3k2-3me77nfcb6c0/shops">店舗一覧へ</Link>
+        <Link className="secondary-button block admin-secondary" to="/admin-8fj3k2-3me77nfcb6c0/shops/new">店舗登録へ</Link>
+        <Link className="secondary-button block admin-secondary" to="/admin-8fj3k2-3me77nfcb6c0/settings">通知先メール設定</Link>
+      </section>
+      <section className="section compact info-card admin-notification-card">
+        <strong>情報提供の通知先</strong>
+        <form className="admin-notification-form" onSubmit={saveNotification}>
+          <label className="checkbox-line"><input type="checkbox" checked={notificationEnabled} onChange={(event) => setNotificationEnabled(event.target.checked)} />メール通知を使う</label>
+          <label>通知先<input type="email" value={notificationToEmail} onChange={(event) => setNotificationToEmail(event.target.value)} placeholder="例: info@example.com" /></label>
+          <label>CC<input type="email" value={notificationCcEmail} onChange={(event) => setNotificationCcEmail(event.target.value)} placeholder="任意" /></label>
+          {!canSaveNotification ? <p className="error-text">正しいメールアドレスを入力してください。</p> : null}
+          <button className="primary-button block" type="submit" disabled={!canSaveNotification}>通知先を保存</button>
+        </form>
+        {notificationMessage ? <span className="admin-save-message">{notificationMessage}</span> : null}
       </section>
       <section className="section compact">
         <button className="ghost-button block" onClick={logout}>ログアウト</button>
       </section>
+    </main>
+  );
+}
+
+
+function AdminSettingsPage({ notification, onSave }: { notification: SupportNotificationSettings; onSave: (next: SupportNotificationSettings) => void }) {
+  const [enabled, setEnabled] = useState(notification.enabled);
+  const [toEmail, setToEmail] = useState(notification.toEmail);
+  const [ccEmail, setCcEmail] = useState(notification.ccEmail);
+  const [message, setMessage] = useState('');
+
+  const canSave = !enabled || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail.trim());
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canSave) return;
+    onSave({ enabled, toEmail, ccEmail });
+    setMessage('通知先を保存しました。新店舗情報提供・店舗情報修正提案・問い合わせの送信先に反映されます。');
+  };
+
+  return (
+    <main className="page">
+      <Header title="通知先メール設定" backTo="/admin-8fj3k2-3me77nfcb6c0" eyebrow="運営設定" />
+      <section className="info-card section compact">
+        <strong>この設定で受け取るもの</strong>
+        <span>新店舗情報提供</span>
+        <span>既存店舗情報修正提案</span>
+        <span>問い合わせ</span>
+      </section>
+      <form className="form-stack" onSubmit={submit}>
+        <label className="checkbox-line"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />メール通知を有効にする</label>
+        <label>通知先メールアドレス<input type="email" value={toEmail} onChange={(event) => setToEmail(event.target.value)} placeholder="例：info@example.com" /></label>
+        <label>CCメールアドレス<input type="email" value={ccEmail} onChange={(event) => setCcEmail(event.target.value)} placeholder="任意" /></label>
+        {!canSave ? <p className="error-text">正しいメールアドレスを入力してください。</p> : null}
+        <button className="primary-button block" type="submit" disabled={!canSave}>保存する</button>
+      </form>
+      {message ? <p className="page-message">{message}</p> : null}
+    </main>
+  );
+}
+
+
+function AdminSubmissionsPage() {
+  const [items, setItems] = useState<ShopSubmission[]>([]);
+  const [status, setStatus] = useState<ShopSubmissionStatus | 'all'>('pending');
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      setMessage('');
+      setItems(await listShopSubmissions(status));
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '店舗情報提供の取得に失敗しました。');
+    } finally {
+      setLoading(false);
+    }
+  }, [status]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const statusLabel = (value: ShopSubmissionStatus) => value === 'approved' ? '承認済み' : value === 'rejected' ? '否認' : '確認待ち';
+  const typeLabel = (value: ShopSubmission['submissionType']) => value === 'update' ? '既存店舗の修正' : '新規店舗提供';
+
+  return (
+    <main className="page">
+      <Header title="管理画面: 店舗情報提供" backTo="/admin-8fj3k2-3me77nfcb6c0" />
+      <section className="section compact info-card form-stack">
+        <label>表示する状態<select value={status} onChange={(event) => setStatus(event.target.value as ShopSubmissionStatus | 'all')}><option value="pending">確認待ち</option><option value="approved">承認済み</option><option value="rejected">否認</option><option value="all">すべて</option></select></label>
+        <span>{loading ? '読み込み中' : `${items.length}件を表示中`}</span>
+        <button type="button" className="secondary-button block admin-secondary" onClick={() => void load()} disabled={loading}>再読み込み</button>
+      </section>
+      {message ? <p className="page-message">{message}</p> : null}
+      <section className="section compact">
+        {loading ? <p>読み込み中です...</p> : items.map((item) => (
+          <article key={item.id} className="admin-row">
+            <div>
+              <strong>{item.name || '店舗名未入力'}</strong>
+              <p>{typeLabel(item.submissionType)} / {statusLabel(item.status)}</p>
+              <p>{item.address || '住所未入力'}</p>
+              <p className="csv-help">投稿日時: {new Date(item.createdAt).toLocaleString('ja-JP')}</p>
+            </div>
+            <div className="row-actions"><Link className="primary-button small" to={`/admin-8fj3k2-3me77nfcb6c0/submissions/${item.id}`}>確認</Link></div>
+          </article>
+        ))}
+        {!loading && items.length === 0 ? <p className="empty-text">対象の店舗情報提供はありません。</p> : null}
+      </section>
+    </main>
+  );
+}
+
+function buildSubmissionDraftInput(item: ShopSubmission | null): ShopSubmissionDraftInput & { adminReason: string } {
+  return {
+    name: item?.name ?? '',
+    tag: item?.tag ?? '独立系',
+    address: item?.address ?? '',
+    station: item?.station ?? '',
+    hours: item?.hours ?? '',
+    holiday: item?.holiday ?? '',
+    seats: item?.seats ?? '',
+    parking: item?.parking ?? null,
+    officialUrl: item?.officialUrl ?? '',
+    lat: item?.lat ?? null,
+    lng: item?.lng ?? null,
+    image: item?.image ?? '',
+    memo: item?.memo ?? '',
+    origin: item?.origin ?? '',
+    genealogy: item?.genealogy ?? '',
+    phone: item?.phone ?? '',
+    officialAccount: item?.officialAccount ?? '',
+    parentId: item?.parentId ?? null,
+    nodoId: item?.nodoId ?? null,
+    isClosed: item?.isClosed ?? false,
+    nodeName: item?.nodeName ?? '',
+    adminReason: item?.adminReason ?? '',
+  };
+}
+
+function AdminSubmissionDetailPage() {
+  const { submissionId } = useParams();
+  const [submission, setSubmission] = useState<ShopSubmission | null>(null);
+  const [form, setForm] = useState<ShopSubmissionDraftInput & { adminReason: string }>(buildSubmissionDraftInput(null));
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const load = useCallback(async () => {
+    if (!submissionId) return;
+    try {
+      setLoading(true);
+      setMessage('');
+      const row = await getShopSubmission(submissionId);
+      setSubmission(row);
+      setForm(buildSubmissionDraftInput(row));
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '店舗情報提供の取得に失敗しました。');
+    } finally {
+      setLoading(false);
+    }
+  }, [submissionId]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const handleChange = (key: keyof (ShopSubmissionDraftInput & { adminReason: string }), value: string | boolean | number | null) => setForm((current) => ({ ...current, [key]: value }));
+  const saveDraft = async () => { if (submissionId) await updateShopSubmissionDraft(submissionId, form); };
+
+  const handleSave = async () => {
+    try {
+      setBusy(true);
+      setMessage('');
+      await saveDraft();
+      setMessage('入力内容を保存しました。');
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '保存に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReview = async (nextStatus: 'approved' | 'rejected') => {
+    if (!submissionId) return;
+    if (nextStatus === 'rejected' && !form.adminReason.trim()) {
+      setMessage('否認する場合は、ユーザーに表示する理由を入力してください。');
+      return;
+    }
+    if (!window.confirm(nextStatus === 'approved' ? 'この内容で承認しますか？' : 'この内容で否認しますか？')) return;
+    try {
+      setBusy(true);
+      setMessage('');
+      await saveDraft();
+      await getAdminAuthState().catch(() => null);
+      await reviewShopSubmission(submissionId, nextStatus, form.adminReason, null);
+      setMessage(nextStatus === 'approved' ? '承認しました。本番DBへ反映する場合は「本番DBへ反映」を押してください。' : '否認しました。理由はユーザーのマイページに表示されます。');
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '審査結果の保存に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleImportToShops = async () => {
+    if (!submissionId) return;
+    const actionLabel = submission?.submissionType === 'update' ? '既存店舗へ反映' : '新規店舗として追加';
+    if (!window.confirm(`${actionLabel}します。よろしいですか？`)) return;
+    try {
+      setBusy(true);
+      setMessage('');
+      await saveDraft();
+      const shopId = await importApprovedSubmissionToShops(submissionId);
+      setMessage(`本番DBへ反映しました。店舗ID: ${shopId}`);
+      await load();
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : '本番DBへの反映に失敗しました。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (loading) return <main className="page"><Header title="店舗情報提供を確認中" backTo="/admin-8fj3k2-3me77nfcb6c0/submissions" /><section className="section compact"><p>読み込み中です...</p></section></main>;
+  if (!submission) return <main className="page"><Header title="店舗情報提供" backTo="/admin-8fj3k2-3me77nfcb6c0/submissions" /><section className="section compact"><p>対象データが見つかりません。</p></section></main>;
+
+  return (
+    <main className="page">
+      <Header title="管理画面: 提供内容確認" backTo="/admin-8fj3k2-3me77nfcb6c0/submissions" />
+      <section className="section compact info-card">
+        <strong>{submission.submissionType === 'update' ? '既存店舗の修正' : '新規店舗提供'}</strong>
+        <span>現在の状態: {submission.status}</span>
+        {submission.targetShopId ? <span>修正対象店舗ID: {submission.targetShopId}</span> : null}
+        {submission.importedAt ? <span>本番DB反映済み: {new Date(submission.importedAt).toLocaleString('ja-JP')}</span> : null}
+        {submission.importedShopId ? <span>反映先店舗ID: {submission.importedShopId}</span> : null}
+      </section>
+      {message ? <p className="page-message">{message}</p> : null}
+      <form className="section compact form-stack" onSubmit={(event) => event.preventDefault()}>
+        <label>店舗名<input value={form.name} onChange={(e) => handleChange('name', e.target.value)} /></label>
+        <label>タグ<select value={form.tag} onChange={(e) => handleChange('tag', e.target.value as Tag)}>{tags.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label>住所<input value={form.address} onChange={(e) => handleChange('address', e.target.value)} /></label>
+        <label>最寄駅<input value={form.station ?? ''} onChange={(e) => handleChange('station', e.target.value)} /></label>
+        <label>営業時間<textarea value={form.hours ?? ''} onChange={(e) => handleChange('hours', e.target.value)} rows={4} /></label>
+        <label>定休日<input value={form.holiday ?? ''} onChange={(e) => handleChange('holiday', e.target.value)} /></label>
+        <label>席数<input value={form.seats ?? ''} onChange={(e) => handleChange('seats', e.target.value)} /></label>
+        <label>駐車場<select value={form.parking === null || form.parking === undefined ? '' : (form.parking ? 'true' : 'false')} onChange={(e) => handleChange('parking', e.target.value === '' ? null : e.target.value === 'true')}><option value="">未確認</option><option value="true">あり</option><option value="false">なし</option></select></label>
+        <label>公式URL<input value={form.officialUrl ?? ''} onChange={(e) => handleChange('officialUrl', e.target.value)} /></label>
+        <label>画像URL<input value={form.image ?? ''} onChange={(e) => handleChange('image', e.target.value)} /></label>
+        <label>源流<input value={form.origin ?? ''} onChange={(e) => handleChange('origin', e.target.value)} /></label>
+        <label>系譜<textarea value={form.genealogy ?? ''} onChange={(e) => handleChange('genealogy', e.target.value)} rows={3} /></label>
+        <label>電話番号<input value={form.phone ?? ''} onChange={(e) => handleChange('phone', e.target.value)} /></label>
+        <label>公式SNS<input value={form.officialAccount ?? ''} onChange={(e) => handleChange('officialAccount', e.target.value)} /></label>
+        <label>緯度 lat<input type="number" step="0.000001" value={form.lat ?? ''} onChange={(e) => handleChange('lat', e.target.value === '' ? null : Number(e.target.value))} /></label>
+        <label>経度 lng<input type="number" step="0.000001" value={form.lng ?? ''} onChange={(e) => handleChange('lng', e.target.value === '' ? null : Number(e.target.value))} /></label>
+        <label>親店舗ID<input value={form.parentId ?? ''} onChange={(e) => handleChange('parentId', e.target.value || null)} /></label>
+        <label>ノードID<input value={form.nodoId ?? ''} onChange={(e) => handleChange('nodoId', e.target.value || null)} /></label>
+        <label>ノード名<input value={form.nodeName ?? ''} onChange={(e) => handleChange('nodeName', e.target.value)} /></label>
+        <label className="checkbox-line"><input type="checkbox" checked={Boolean(form.isClosed)} onChange={(e) => handleChange('isClosed', e.target.checked)} />閉店済み</label>
+        <label>管理メモ<textarea value={form.memo ?? ''} onChange={(e) => handleChange('memo', e.target.value)} rows={3} /></label>
+        <label>ユーザーに表示する理由・コメント<textarea value={form.adminReason} onChange={(e) => handleChange('adminReason', e.target.value)} rows={4} placeholder="否認時は必須。承認時の補足にも使えます。" /></label>
+        <div className="action-row">
+          <button type="button" className="secondary-button block admin-secondary" onClick={() => void handleSave()} disabled={busy}>{busy ? '保存中...' : '下書き保存'}</button>
+          <button type="button" className="primary-button block" onClick={() => void handleReview('approved')} disabled={busy}>承認する</button>
+          <button type="button" className="ghost-button small-danger" onClick={() => void handleReview('rejected')} disabled={busy}>否認する</button>
+          {submission.status === 'approved' && !submission.importedAt ? <button type="button" className="primary-button block" onClick={() => void handleImportToShops()} disabled={busy}>{submission.submissionType === 'update' ? '本番DBへ反映' : '本番DBへ追加'}</button> : null}
+          {submission.importedAt ? <span className="page-message">本番DBへ反映済みです。</span> : null}
+        </div>
+      </form>
     </main>
   );
 }
@@ -1782,7 +3038,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
             </div>
             <div className="row-actions">
               <Link className="secondary-button small admin-secondary" to={`/shops/${shop.id}`}>公開画面</Link>
-              <Link className="primary-button small" to={`/admin/shops/${shop.id}`}>編集</Link>
+              <Link className="primary-button small" to={`/admin-8fj3k2-3me77nfcb6c0/shops/${shop.id}`}>編集</Link>
               <button className="ghost-button small-danger" onClick={() => void handleDelete(shop.id)} disabled={busyId === shop.id}>{busyId === shop.id ? '削除中...' : '削除'}</button>
             </div>
           </article>
@@ -1832,7 +3088,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
       await onSaved();
       const uploadSummary = pendingUploads.length ? ` 画像${pendingUploads.length}枚も反映しました。` : '';
       window.alert(`変更完了。${uploadSummary}`.trim());
-      navigate('/admin/shops', { replace: true });
+      navigate('/admin-8fj3k2-3me77nfcb6c0/shops', { replace: true });
     } catch (err) {
       const rawMessage = err instanceof Error ? err.message : '';
       const nextMessage = rawMessage.trim() || '保存に失敗しました。Storage設定と画像権限を確認してください。';
@@ -1870,7 +3126,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
 
   return (
     <main className="page">
-      <Header title="管理画面: 店舗登録・編集" backTo="/admin/shops" />
+      <Header title="管理画面: 店舗登録・編集" backTo="/admin-8fj3k2-3me77nfcb6c0/shops" />
       {message ? <p className="page-message">{message}</p> : null}
       <form className="section compact form-stack" onSubmit={handleSubmit}>
         <label>店舗名<input value={form.name} onChange={(e) => handleChange('name', e.target.value)} /></label>
@@ -1919,7 +3175,7 @@ function AdminEditPage({ shops, onSaved }: { shops: Shop[]; onSaved: () => Promi
         </section>
         <div className="action-row">
           <button type="submit" className="primary-button block" disabled={busy}>{busy ? '保存中...' : '保存'}</button>
-          <button type="button" className="secondary-button block admin-secondary" onClick={() => navigate('/admin/shops')} disabled={busy}>一覧へ戻る</button>
+          <button type="button" className="secondary-button block admin-secondary" onClick={() => navigate('/admin-8fj3k2-3me77nfcb6c0/shops')} disabled={busy}>一覧へ戻る</button>
         </div>
       </form>
     </main>
@@ -2511,10 +3767,11 @@ function GenealogyNodeCard({
 
 function BottomNav({ className = '' }: { className?: string }) {
   return (
-    <nav className={`bottom-nav three-col ${className}`.trim()}>
+    <nav className={`bottom-nav four-col ${className}`.trim()}>
       <Link to="/">トップ</Link>
       <Link to="/map">マップ</Link>
       <Link to="/genealogy">系譜図</Link>
+      <Link to="/mypage">マイページ</Link>
     </nav>
   );
 }
