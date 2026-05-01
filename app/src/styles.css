@@ -308,6 +308,8 @@ button { border: 0; cursor: pointer; }
   z-index: 630;
   max-height: calc(100vh - env(safe-area-inset-top, 0px) - 220px);
   overflow: auto;
+  pointer-events: auto;
+  touch-action: pan-y;
 }
 .map-overlay-card .shop-card { margin-bottom: 0; }
 .map-card-close-button {
@@ -325,6 +327,7 @@ button { border: 0; cursor: pointer; }
   align-items: center;
   justify-content: center;
   z-index: 2;
+  touch-action: manipulation;
   box-shadow: 0 8px 18px rgba(0,0,0,0.24);
 }
 .map-overlay-card .shop-content {
@@ -1468,6 +1471,28 @@ button { border: 0; cursor: pointer; }
 .review-list-card p {
   margin: 0;
   color: #555;
+  line-height: 1.6;
+}
+.submission-detail-card {
+  display: grid;
+  gap: 12px;
+}
+.submission-detail-row {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(111,78,55,0.12);
+}
+.submission-detail-row:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.submission-detail-row strong {
+  color: #6f4e37;
+  font-size: 12px;
+}
+.submission-detail-row span {
+  white-space: pre-wrap;
   line-height: 1.6;
 }
 .primary-button:disabled {
