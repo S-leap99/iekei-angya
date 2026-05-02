@@ -625,11 +625,7 @@ button { border: 0; cursor: pointer; }
   min-height: 40px;
 }
 .search-filter-row {
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.4fr);
-}
-.search-filter-row > .filter-dropdown:nth-of-type(2),
-.search-filter-row > .filter-dropdown:nth-of-type(3) {
-  display: none;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 .search-filter-row .filter-select-button,
 .search-filter-row .toggle-filter {
@@ -837,7 +833,7 @@ button { border: 0; cursor: pointer; }
 }
 .genealogy-tab-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .genealogy-tab-button {

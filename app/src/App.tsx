@@ -15,6 +15,7 @@ import type { CsvImportPreview, Shop, ShopDraft, ShopImage, ShopImageType, Tag }
 
 const originOptions = ['吉村家系', '本牧家系', '六角家系'];
 const tags: Tag[] = ['直系', '独立系', '資本系'];
+const genealogyTags: Tag[] = ['直系', '独立系'];
 const defaultCenter: [number, number] = [35.681236, 139.767125];
 const imageTypeLabels: Record<ShopImageType, string> = { slot1: '1', slot2: '2', slot3: '3' };
 const imageTypeOrder: ShopImageType[] = ['slot1', 'slot2', 'slot3'];
@@ -1171,7 +1172,7 @@ function HomePage(_: { shops: Shop[] }) {
             <input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="店名で検索"
+              placeholder="店名、住所で検索"
             />
             <button type="submit" className="primary-button">検索</button>
           </form>
@@ -3371,7 +3372,7 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
   const initialQuery = searchParams.get('q') ?? '';
   const initialFocusNodeId = searchParams.get('focus') ?? locationState?.focusNodeId ?? null;
   const initialZoom = Number(searchParams.get('zoom') ?? '1');
-  const [activeTag, setActiveTag] = useState<Tag>(tags.includes(initialTag as Tag) ? (initialTag as Tag) : '直系');
+  const [activeTag, setActiveTag] = useState<Tag>(genealogyTags.includes(initialTag as Tag) ? (initialTag as Tag) : '直系');
   const [query, setQuery] = useState(initialQuery);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(initialFocusNodeId);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(initialFocusNodeId);
@@ -3546,7 +3547,7 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
     const nextZoomParam = Number(searchParams.get('zoom') ?? '1');
     const nextZoom = Number.isFinite(nextZoomParam) ? clamp(nextZoomParam, GENEALOGY_MIN_ZOOM, GENEALOGY_MAX_ZOOM) : 1;
 
-    if (tags.includes(nextTag as Tag) && nextTag !== activeTag) {
+    if (genealogyTags.includes(nextTag as Tag) && nextTag !== activeTag) {
       setActiveTag(nextTag as Tag);
     }
     if (nextQuery !== query) {
@@ -3696,7 +3697,7 @@ function GenealogyPage({ shops, loading }: { shops: Shop[]; loading: boolean }) 
       <section className="section compact genealogy-chart-section genealogy-chart-section-v2">
         <div className="sticky-panel genealogy-control-panel">
           <div className="genealogy-tab-row" role="tablist" aria-label="系統タブ">
-            {tags.map((tag) => (
+            {genealogyTags.map((tag) => (
               <button
                 key={tag}
                 type="button"
