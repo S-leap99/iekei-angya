@@ -2455,6 +2455,20 @@ function MySubmissionDetailPage({ member }: { member: ReturnType<typeof useMembe
   );
 }
 
+function SubmissionImagePreview({ imageUrl, compact = false }: { imageUrl: string; compact?: boolean }) {
+  const cleanedUrl = imageUrl.trim();
+  if (!cleanedUrl) return null;
+
+  return (
+    <div className={`submission-image-preview ${compact ? 'is-compact' : ''}`.trim()}>
+      <a href={cleanedUrl} target="_blank" rel="noreferrer" aria-label="提供写真を新しいタブで開く">
+        <img src={cleanedUrl} alt="ユーザー提供写真" loading="lazy" />
+      </a>
+      {!compact ? <a className="text-link dark-link" href={cleanedUrl} target="_blank" rel="noreferrer">画像を別タブで開く</a> : null}
+    </div>
+  );
+}
+
 function NewsListPage({ member }: { member: ReturnType<typeof useMemberAccount> }) { return <main className="page"><Header title="お知らせ" backTo="/mypage" /><section className="section">{member.news.map((news) => <Link key={news.id} className="info-card member-menu-card" to={`/mypage/news/${news.id}`}><strong>{news.title}</strong><span>{news.date}</span></Link>)}</section><BottomNav /></main>; }
 
 function NewsDetailPage({ member }: { member: ReturnType<typeof useMemberAccount> }) { const { newsId } = useParams(); const news = member.news.find((item) => item.id === newsId) ?? member.news[0] ?? sampleNews[0]; return <main className="page"><Header title="お知らせ詳細" backTo="/mypage/news" /><section className="hero-card"><p className="eyebrow">{news.date}</p><h2>{news.title}</h2><p className="lead">{news.body}</p></section><BottomNav /></main>; }
@@ -2868,6 +2882,7 @@ function AdminSubmissionsPage() {
               <p>{typeLabel(item.submissionType)} / {statusLabel(item.status)}</p>
               <p>{item.address || '住所未入力'}</p>
               {item.informationSource ? <p>情報ソース: {item.informationSource}</p> : null}
+              {item.image ? <SubmissionImagePreview imageUrl={item.image} compact /> : null}
               <p className="csv-help">投稿日時: {new Date(item.createdAt).toLocaleString('ja-JP')}</p>
             </div>
             <div className="row-actions"><Link className="primary-button small" to={`/admin-8fj3k2-3me77nfcb6c0/submissions/${item.id}`}>確認</Link></div>
@@ -3002,6 +3017,12 @@ function AdminSubmissionDetailPage() {
         {submission.importedAt ? <span>本番DB反映済み: {new Date(submission.importedAt).toLocaleString('ja-JP')}</span> : null}
         {submission.importedShopId ? <span>反映先店舗ID: {submission.importedShopId}</span> : null}
       </section>
+      {submission.image ? (
+        <section className="section compact info-card">
+          <strong>提供写真</strong>
+          <SubmissionImagePreview imageUrl={submission.image} />
+        </section>
+      ) : null}
       {message ? <p className="page-message">{message}</p> : null}
       <form className="section compact form-stack" onSubmit={(event) => event.preventDefault()}>
         <label>店舗名<input value={form.name} onChange={(e) => handleChange('name', e.target.value)} /></label>
@@ -3014,6 +3035,7 @@ function AdminSubmissionDetailPage() {
         <label>駐車場<select value={form.parking === null || form.parking === undefined ? '' : (form.parking ? 'true' : 'false')} onChange={(e) => handleChange('parking', e.target.value === '' ? null : e.target.value === 'true')}><option value="">未確認</option><option value="true">あり</option><option value="false">なし</option></select></label>
         <label>公式URL<input value={form.officialUrl ?? ''} onChange={(e) => handleChange('officialUrl', e.target.value)} /></label>
         <label>画像URL<input value={form.image ?? ''} onChange={(e) => handleChange('image', e.target.value)} /></label>
+        {form.image ? <SubmissionImagePreview imageUrl={form.image} /> : null}
         <label>源流<input value={form.origin ?? ''} onChange={(e) => handleChange('origin', e.target.value)} /></label>
         <label>系譜<textarea value={form.genealogy ?? ''} onChange={(e) => handleChange('genealogy', e.target.value)} rows={3} /></label>
         <label>電話番号<input value={form.phone ?? ''} onChange={(e) => handleChange('phone', e.target.value)} /></label>

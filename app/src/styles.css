@@ -1492,6 +1492,38 @@ button { border: 0; cursor: pointer; }
   white-space: pre-wrap;
   line-height: 1.6;
 }
+.submission-image-preview {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+.submission-image-preview a:first-child {
+  display: block;
+  overflow: hidden;
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,0.08);
+  background: #f3f4f6;
+}
+.submission-image-preview img {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  background: #f3f4f6;
+}
+.submission-image-preview.is-compact {
+  margin-top: 8px;
+  max-width: 132px;
+}
+.submission-image-preview.is-compact img {
+  aspect-ratio: 1 / 1;
+  max-height: none;
+  object-fit: cover;
+}
+.dark-link {
+  color: var(--primary);
+  font-weight: 700;
+}
 .primary-button:disabled {
   opacity: .45;
   cursor: not-allowed;
