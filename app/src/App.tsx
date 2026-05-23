@@ -128,6 +128,38 @@ function buildGenealogyUrl({
   return `/genealogy${queryString ? `?${queryString}` : ''}`;
 }
 
+function decodeRouteParam(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function getShopUrlSegment(shop: Pick<Shop, 'id' | 'name'>) {
+  const slug = shop.name.trim().replace(/\s+/g, '-') || shop.id;
+  return encodeURIComponent(slug);
+}
+
+function buildShopDetailUrl(shop: Pick<Shop, 'id' | 'name'>) {
+  return `/shops/${getShopUrlSegment(shop)}`;
+}
+
+function getShopRouteCandidates(shop: Shop) {
+  const name = shop.name.trim();
+  return [
+    name,
+    name.replace(/\s+/g, '-'),
+    shop.id,
+  ];
+}
+
+function findShopByRouteParam(shops: Shop[], routeParam?: string) {
+  if (!routeParam) return null;
+  const decoded = decodeRouteParam(routeParam).trim();
+  return shops.find((shop) => getShopRouteCandidates(shop).includes(decoded)) ?? null;
+}
+
 function buildGenealogyGraph(shops: Shop[], activeTag: Tag): GenealogyGraph {
   const tagShops = shops.filter((shop) => shop.tag === activeTag);
   const nodesMap = new Map<string, GenealogyGraphNode>();
@@ -159,7 +191,7 @@ function buildGenealogyGraph(shops: Shop[], activeTag: Tag): GenealogyGraph {
       accent: getGenealogyAccent(representative.tag),
       link: isMulti
         ? { kind: 'list', to: `/shops?nodoId=${encodeURIComponent(nodeId)}&q=${encodeURIComponent(getNodeDisplayName(representative))}` }
-        : { kind: 'shop', to: `/shops/${representative.id}` },
+        : { kind: 'shop', to: buildShopDetailUrl(representative) },
       shopIds: displayShops.map((shop) => shop.id),
       shopCount: displayShops.length,
       tag: representative.tag,
@@ -2027,13 +2059,13 @@ function MapViewportController({ center, targetZoom, shops, fitToShops, fitReque
 function ShopDetailPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
   const location = useLocation();
   const { shopId } = useParams();
-  const shop = shops.find((item) => item.id === shopId) ?? null;
+  const shop = findShopByRouteParam(shops, shopId);
   const locationState = (location.state as { backTo?: string; backState?: Record<string, unknown> } | null) ?? null;
   const backTo = locationState?.backTo ?? '/shops';
   const mapLink = shop
     ? `/map?ids=${encodeURIComponent(shop.id)}&selected=${encodeURIComponent(shop.id)}&q=${encodeURIComponent(getNodeDisplayName(shop))}&selmode=centered`
     : '/map';
-  const detailUrl = shop ? `/shops/${shop.id}` : '/shops';
+  const detailUrl = shop ? buildShopDetailUrl(shop) : '/shops';
   const genealogyLink = shop ? buildGenealogyUrl({ tag: shop.tag, focusNodeId: shop.nodoId || shop.id, zoom: 1 }) : '/genealogy';
   useEffect(() => {
     if (shop) member.addHistory(shop.id);
@@ -2067,7 +2099,7 @@ function ShopDetailPage({ shops, member }: { shops: Shop[]; member: ReturnType<t
       <div className="detail-quick-actions">
         <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo }, entrySource: 'detail' as MapEntrySource }}>地図で見る</Link>
         <Link className="secondary-button block" to={genealogyLink} state={{ backTo: detailUrl, backState: { backTo }, focusNodeId: shop.nodoId || shop.id }}>系譜図で見る</Link>
-        <Link className="secondary-button block" to={`/shops/${shop.id}/edit-suggestion`}>情報修正</Link>
+        <Link className="secondary-button block" to={`${detailUrl}/edit-suggestion`}>情報修正</Link>
       </div>
       <section className="detail-summary">
         <h2>{shop.name}</h2>
@@ -2089,7 +2121,7 @@ function ShopDetailPage({ shops, member }: { shops: Shop[]; member: ReturnType<t
       </section>
       {!member.session.loggedIn ? <LoginGuideCard actionLabel="保存・レビュー" /> : null}
       <section className="section compact">
-        <div className="section-head"><h2>レビュー</h2><Link className="text-link" to={`/shops/${shop.id}/review`}>レビューを書く</Link></div>
+        <div className="section-head"><h2>レビュー</h2><Link className="text-link" to={`${detailUrl}/review`}>レビューを書く</Link></div>
         <div className="review-list">
           {member.reviews.filter((review) => review.shopId === shop.id).map((review) => <ReviewCard key={review.id} review={review} />)}
           {!member.reviews.some((review) => review.shopId === shop.id) ? <p className="empty-text">まだレビューはありません。最初のレビューを書いてみましょう。</p> : null}
@@ -2110,7 +2142,7 @@ function ShopDetailPage({ shops, member }: { shops: Shop[]; member: ReturnType<t
       <div className="action-row section compact">
         <Link className="secondary-button block" to={mapLink} state={{ backTo: detailUrl, backState: { backTo }, entrySource: 'detail' as MapEntrySource }}>{'地図で見る'}</Link>
         <Link className="secondary-button block" to={genealogyLink} state={{ backTo: detailUrl, backState: { backTo }, focusNodeId: shop.nodoId || shop.id }}>系譜図を見る</Link>
-        <Link className="secondary-button block" to={`/shops/${shop.id}/edit-suggestion`}>情報修正を提案</Link>
+        <Link className="secondary-button block" to={`${detailUrl}/edit-suggestion`}>情報修正を提案</Link>
       </div>
       <BottomNav />
     </main>
@@ -2264,11 +2296,11 @@ function HistoryPage({ shops, member }: { shops: Shop[]; member: ReturnType<type
   return <RequireMember member={member}><main className="page"><Header title="閲覧履歴" backTo="/mypage" /><div className="section-head"><p className="lead">最近見た店舗を10件まで表示します。</p><button className="small-danger" onClick={member.clearHistory}>削除</button></div><ShopMiniList shops={listed} empty="閲覧履歴はまだありません。" /><BottomNav /></main></RequireMember>;
 }
 
-function ShopMiniList({ shops, empty }: { shops: Shop[]; empty: string }) { if (!shops.length) return <p className="empty-text section">{empty}</p>; return <section className="section">{shops.map((shop) => <Link key={shop.id} className="info-card shop-mini-card" to={`/shops/${shop.id}`}><strong>{shop.name}</strong><span>{shop.station || shop.address}</span></Link>)}</section>; }
+function ShopMiniList({ shops, empty }: { shops: Shop[]; empty: string }) { if (!shops.length) return <p className="empty-text section">{empty}</p>; return <section className="section">{shops.map((shop) => <Link key={shop.id} className="info-card shop-mini-card" to={buildShopDetailUrl(shop)}><strong>{shop.name}</strong><span>{shop.station || shop.address}</span></Link>)}</section>; }
 
 function MyReviewsPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
   const myReviews = member.reviews.filter((review) => review.userId === member.session.userId || (!member.session.userId && review.nickname === member.session.nickname));
-  return <RequireMember member={member}><main className="page"><Header title="投稿したレビュー" backTo="/mypage" />{myReviews.length ? <section className="section">{myReviews.map((review) => { const shop = shops.find((item) => item.id === review.shopId); return <Link key={review.id} className="info-card review-list-card" to={shop ? `/shops/${shop.id}` : '/shops'}><strong>{shop?.name ?? '店舗情報なし'}</strong><span>{'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}{review.hasPhoto ? '・写真あり' : ''}</span><p>{review.comment || 'コメントなし'}</p></Link>; })}</section> : <p className="empty-text section">投稿したレビューはまだありません。</p>}<BottomNav /></main></RequireMember>;
+  return <RequireMember member={member}><main className="page"><Header title="投稿したレビュー" backTo="/mypage" />{myReviews.length ? <section className="section">{myReviews.map((review) => { const shop = shops.find((item) => item.id === review.shopId); return <Link key={review.id} className="info-card review-list-card" to={shop ? buildShopDetailUrl(shop) : '/shops'}><strong>{shop?.name ?? '店舗情報なし'}</strong><span>{'★'.repeat(review.rating)}{'☆'.repeat(5 - review.rating)}{review.hasPhoto ? '・写真あり' : ''}</span><p>{review.comment || 'コメントなし'}</p></Link>; })}</section> : <p className="empty-text section">投稿したレビューはまだありません。</p>}<BottomNav /></main></RequireMember>;
 }
 
 function ReviewCard({ review }: { review: { nickname: string; rating: number; comment: string; hasPhoto: boolean; imageUrls?: string[] } }) {
@@ -2293,7 +2325,7 @@ function ReviewCard({ review }: { review: { nickname: string; rating: number; co
 
 function ReviewPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount> }) {
   const { shopId } = useParams();
-  const shop = shops.find((item) => item.id === shopId);
+  const shop = findShopByRouteParam(shops, shopId);
   const [rating, setRating] = useState(5);
   const [comment, setComment] = useState('');
   const [file, setFile] = useState<File | null>(null);
@@ -2314,7 +2346,7 @@ function ReviewPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeo
       setBusy(false);
     }
   };
-  return <RequireMember member={member} message="レビューを書くにはログインが必要です。"><main className="page"><Header title="レビューを書く" backTo={shop ? `/shops/${shop.id}` : '/shops'} /><section className="hero-card"><h2>{shop?.name ?? '店舗'}</h2><p className="lead">★評価は必須、コメントと写真は任意です。</p></section><form className="form-stack section" onSubmit={submit}><label>★評価<select value={rating} onChange={(e) => setRating(Number(e.target.value))}><option value={5}>★★★★★ 5</option><option value={4}>★★★★☆ 4</option><option value={3}>★★★☆☆ 3</option><option value={2}>★★☆☆☆ 2</option><option value={1}>★☆☆☆☆ 1</option></select></label><label>コメント<textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="味・雰囲気・行きやすさなど" /></label><label>写真<input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label><button className="primary-button block" disabled={busy}>{busy ? '投稿中...' : '投稿する'}</button></form>{done ? <p className="page-message">レビューを投稿しました。</p> : null}{message ? <p className="page-message">{message}</p> : null}<BottomNav /></main></RequireMember>;
+  return <RequireMember member={member} message="レビューを書くにはログインが必要です。"><main className="page"><Header title="レビューを書く" backTo={shop ? buildShopDetailUrl(shop) : '/shops'} /><section className="hero-card"><h2>{shop?.name ?? '店舗'}</h2><p className="lead">★評価は必須、コメントと写真は任意です。</p></section><form className="form-stack section" onSubmit={submit}><label>★評価<select value={rating} onChange={(e) => setRating(Number(e.target.value))}><option value={5}>★★★★★ 5</option><option value={4}>★★★★☆ 4</option><option value={3}>★★★☆☆ 3</option><option value={2}>★★☆☆☆ 2</option><option value={1}>★☆☆☆☆ 1</option></select></label><label>コメント<textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="味・雰囲気・行きやすさなど" /></label><label>写真<input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] ?? null)} /></label><button className="primary-button block" disabled={busy}>{busy ? '投稿中...' : '投稿する'}</button></form>{done ? <p className="page-message">レビューを投稿しました。</p> : null}{message ? <p className="page-message">{message}</p> : null}<BottomNav /></main></RequireMember>;
 }
 
 
@@ -2620,7 +2652,7 @@ const defaultShopCorrectionForm: ShopCorrectionFormState = {
 
 function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnType<typeof useMemberAccount>; notification: SupportNotificationSettings }) {
   const { shopId } = useParams();
-  const shop = shops.find((item) => item.id === shopId);
+  const shop = findShopByRouteParam(shops, shopId);
   const [form, setForm] = useState<ShopCorrectionFormState>(defaultShopCorrectionForm);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
@@ -2678,7 +2710,7 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
   return (
     <RequireMember member={member} message="店舗情報の修正提案にはログインが必要です。">
       <main className="page">
-        <Header title="店舗情報の修正提案" backTo={`/shops/${shop.id}`} />
+        <Header title="店舗情報の修正提案" backTo={buildShopDetailUrl(shop)} />
         <section className="info-card section compact">
           <strong>{shop.name}</strong>
           <p>修正したい項目だけ入力してください</p>
@@ -2704,7 +2736,7 @@ function ShopCorrectionPage({ shops, member }: { shops: Shop[]; member: ReturnTy
           {!canSubmit ? <p className="form-hint">修正したい項目を1つ以上入力すると送信できます。</p> : null}
           <div className="action-row">
             <button className="primary-button block" type="submit" disabled={!canSubmit || busy}>{busy ? '送信中...' : '送信する'}</button>
-            <button className="secondary-button block admin-secondary" type="button" onClick={() => navigate(`/shops/${shop.id}`)} disabled={busy}>戻る</button>
+            <button className="secondary-button block admin-secondary" type="button" onClick={() => navigate(buildShopDetailUrl(shop))} disabled={busy}>戻る</button>
           </div>
         </form>
         {message ? <p className="page-message">{message}</p> : null}
@@ -3181,7 +3213,7 @@ function AdminShopsPage({ shops, loading, onDeleted, onRefresh }: { shops: Shop[
               <p className="csv-help">parent: {shop.parentId || '未設定'} / nodo: {shop.nodoId || '未設定'}</p>
             </div>
             <div className="row-actions">
-              <Link className="secondary-button small admin-secondary" to={`/shops/${shop.id}`}>公開画面</Link>
+              <Link className="secondary-button small admin-secondary" to={buildShopDetailUrl(shop)}>公開画面</Link>
               <Link className="primary-button small" to={`/admin-8fj3k2-3me77nfcb6c0/shops/${shop.id}`}>編集</Link>
               <button className="ghost-button small-danger" onClick={() => void handleDelete(shop.id)} disabled={busyId === shop.id}>{busyId === shop.id ? '削除中...' : '削除'}</button>
             </div>
@@ -3356,7 +3388,7 @@ function buildDraft(shop: Shop | null): ShopDraft {
 
 function ShopCard({ shop, compact = false, backTo, backState }: { shop: Shop; compact?: boolean; backTo?: string; backState?: Record<string, unknown> }) {
   return (
-    <Link to={`/shops/${shop.id}`} state={backTo ? { backTo, backState } : undefined} className={`shop-card ${compact ? 'compact-card' : ''}`}>
+    <Link to={buildShopDetailUrl(shop)} state={backTo ? { backTo, backState } : undefined} className={`shop-card ${compact ? 'compact-card' : ''}`}>
       <img src={getPrimaryShopImage(shop)} alt={shop.name} />
       <div className="shop-content">
         <div className="shop-meta">
